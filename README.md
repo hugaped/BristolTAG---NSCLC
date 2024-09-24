@@ -1,6 +1,6 @@
 # BristolTAG - NSCLC
 
-This repository contains analyses for the National Institute of Health Research Non-Small Cell Lung Cancer (NSCLC) pathway appraisal. The repository includes the following files for each node in the NSCLC pathway:
+This repository contains analyses for the National Institute for Health and Care Research (NIHR) Non-Small Cell Lung Cancer (NSCLC) pathway appraisal - *"Treatments for metastatic non-small-cell lung cancer: a pathways pilot with systematic review, evidence synthesis, and economic model"*. The repository includes the following files for each node in the NSCLC pathway:
 
 * Data files for digitized Individual Participant Data from included studies
 * R files to run fractional polynomial analyses
