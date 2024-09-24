@@ -1,0 +1,248 @@
+---
+title: "NSCLC_Outputs - Including MAIC"
+author: "Hugo Pedder"
+date: "2023-10-06"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  options(knitr.kable.NA = '\\-'),
+  fig.height=5, 
+  fig.width=7
+  )
+```
+```{r, eval=FALSE, include=FALSE}
+devtools::install_github("hugaped/BristolTAG")
+```
+```{r, include=FALSE}
+library(BristolTAG)
+library(survival)
+library(ggplot2)
+library(tidyverse)
+```
+
+This document can be used as a template to generate outputs for each node for the NSCLC report. It outputs the following into a Word document (so can easily be copied into the main report):
+
+* Log-log plots for each included study
+* Table of model fit statistics
+* Plots of KM and fitted survival curves for reference study for best fitting model(s)
+* Plots of time-varying (implied) HRs for best fitting model(s)
+* If evidence loops exist then also provides model fit results for the Unrelated Mean Effects model and dev-dev plots for the selected model
+* Predicted survival curves for selected model for use in economic model (including extrapolation)
+
+## Load model results
+
+```{r}
+modseq1 <- readRDS(file="JAGS_Results/NS1_PFS_fpoly1_MAIC.RDS")
+modseq2 <- readRDS(file="JAGS_Results/NS1_PFS_fpoly2_MAIC.RDS")
+modseq <- append(modseq1, modseq2)
+class(modseq) <- "sequence.fpoly"
+```
+
+
+## Load dataset
+
+```{r}
+ipd <- attributes(modseq[[1]])$ipd
+
+anova <- anova_data(timepoints=seq(0,72, by=1),
+                    df=ipd)
+```
+
+## Log-log plots
+
+```{r, fig.cap="Log-log plots for PFS for studies included in node NS1. Separation of the two lines indicates violation of the proportional hazards assumption"}
+ipd <- attr(modseq1[[1]], "ipd")
+
+loglog_plot(ipd)
+```
+
+
+## Model fit statistics
+
+```{r}
+modfit <- summary(modseq)
+
+noconv <- subset(modfit, converged==FALSE)
+modfit <- subset(modfit, converged==TRUE)
+
+modfit <- rbind(summary(modseq1), summary(modseq2))
+
+# Drop models with errors
+modfit <- modfit[!is.na(modfit$converged),]
+
+modfit <- arrange(modfit, DIC)
+
+candmod <- modfit[c(1:4),]
+```
+
+```{r}
+# Only report FP powers
+knitr::kable(modfit[,c(-1,-7)], col.names=c("Power 1", "Power 2", "Residual deviance", "pV", "DIC"),
+                  digits=1, 
+                  caption=paste0("Model fit statistics for successfully converged fractional polynomial models run on PFS for node NS1. Power 1 and Power 2 represent fractional polynomial powers. 1st order fractional polynomials only have a single power parameter (Power 1). Total number of data points = ", nrow(anova$aggregate)))
+```
+
+Based on this, candidate models are the following:
+
+```{r}
+knitr::kable(candmod[,c(-1,-7)], col.names=c("Power 1", "Power 2", "Residual deviance", "pV", "DIC"),
+                  digits=1, 
+                  caption=paste0("Model fit statistics for candidate fractional polynomial models run on PFS for node NS1. Power 1 and Power 2 represent fractional polynomial powers. 1st order fractional polynomials only have a single power parameter (Power 1). Total number of data points = ", nrow(anova$aggregate)))
+```
+
+
+## Plots of time-varying HRs
+
+These are shown only for the 7 candidate models, but additional ones could be specified here.
+
+```{r}
+hazardrats <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  hr <- hrcalc(modseq[[candmod$model[mod]]], times=seq(1, 60, length.out = 100), eform=TRUE)
+  hr <- hr$summary %>% mutate(model=candmod$model[mod])
+  hazardrats <- rbind(hazardrats, hr)
+}
+```
+
+
+Plot panels of time-varying HRs for candidate models:
+
+```{r}
+reftrt <- "PCT"
+
+out.df <- hazardrats
+
+trtnames <- attr(modseq[[1]], "trtnames")
+
+out.df$trt1 <- factor(out.df$trt1, labels=trtnames, levels=trtnames)
+
+cols <- RColorBrewer::brewer.pal(dplyr::n_distinct(out.df$trt1), "Set1")
+
+out.df <- subset(out.df, trt2==reftrt)
+cols <- cols[unique(as.numeric(out.df$trt1))]
+
+out.df$model <- factor(out.df$model)
+
+g <- ggplot2::ggplot(out.df, ggplot2::aes(x=time, 
+                                          #ymin=`97.5%`, ymax=`2.5%`, # Commenting out makes y-axis scales better
+                                          y=`50%`,
+                        color=trt1, fill=trt1, linetype=trt1)) +
+  ggplot2::geom_line() +
+  #ggplot2::geom_ribbon(alpha=0.3) +
+  ggplot2::facet_wrap(~model) +
+  ggplot2::xlab("Time") +
+  ggplot2::ylab("HR") +
+  ggplot2::theme_bw() +
+  ggplot2::ggtitle(paste0("Time-varying relative effects vs treatment ", unique(out.df$trt2))) +
+  ggplot2::scale_fill_manual(name = "Treatment", values=cols) +
+  ggplot2::scale_color_manual(name = "Treatment", values=cols) +
+  ggplot2::scale_linetype_discrete(name = "Treatment")
+
+plot(g)
+```
+
+Based on the above plot, the two that suggest HRs increase over time continuously for ABCP are implausible (and this probably reflects the fact that the MAIC gave such favourable results. The others are perhaps "possible" but I think the most plausible would be the one that shows the most similarity in the longer term (FP_-0.5_-1). It's also the one with the lowest DIC.
+
+Time-varying HRs for a single model with lowest DIC (if needed):
+
+```{r, fig.cap="Time-varying (implied) hazard ratios for all treatments versus ABCP, estimated from 2nd order fractional polynomial (0, -1) of PFS for NS1. Shaded regions represent 95%CrIs"}
+hazardrats <- hrcalc(modseq[[candmod$model[1]]], times=seq(1, 60, length.out = 100), eform=TRUE)
+g <- plot(hazardrats, reftrt="PCT")
+g + geom_line(linewidth=0.8)
+```
+
+
+## Plots of survival predictions for different models
+
+```{r}
+surv <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  smod <- survcalc(modseq[[candmod$model[mod]]], refstudy="KEYNOTE189", 
+                times=seq(1, 60, length.out = 100))
+  smod <- smod$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, smod)
+}
+```
+
+```{r}
+out.df <- surv
+
+trtnames <- attr(modseq[[1]], "trtnames")
+out.df$treatment <- factor(out.df$treatment, labels=trtnames, levels=trtnames)
+
+# Define colours
+cols <- RColorBrewer::brewer.pal(dplyr::n_distinct(trtnames), "Set1")
+
+# Subset by treatments
+# out.df <- subset(out.df, treatment %in% treats)
+cols <- cols[unique(as.numeric(out.df$treatment))]
+
+out.df$model <- factor(out.df$model)
+
+# capt <- paste0("Fractional polynomial; P1 = ", surv$P1, ifelse(!is.null(surv$P2), paste0(", P2 = ", surv$P2), ""))
+# capt <- paste(capt, paste("Reference study:", attr(surv, "refstudy")), sep="\n")
+capt <-paste("Reference study:", attr(modseq[[1]], "refstudy"))
+
+g <- ggplot2::ggplot(out.df, ggplot2::aes(x=time, ymin=`97.5%`, ymax=`2.5%`, y=`50%`,
+                        color=treatment, fill=treatment, linetype=treatment)) +
+  ggplot2::geom_line() +
+  ggplot2::facet_wrap(~model) +
+  ggplot2::xlab("Time") + ggplot2::ylab("PFS") +
+  ggplot2::theme_bw() +
+  ggplot2::scale_fill_manual(name = "Treatment", values=cols) +
+  ggplot2::scale_color_manual(name = "Treatment", values=cols) +
+  ggplot2::scale_linetype_discrete(name = "Treatment") +
+  ggplot2::labs(caption=capt)
+
+plot(g)
+```
+
+All the predictions suggest that ABCP has poorer PFS in the long term than PCT...this has pretty poor face validity.
+
+
+## Plot of survival predictions and KM data for each study, and for reference study
+
+Plot with KM for model with lowest DIC:
+
+
+```{r, results="hide", fig.cap="Predicted survival curves for IMpower150, estimated from 2nd order fractional polynomial of PFS for NS1. Survival predictions are plotted as coloured lines with shaded 95%CrIs. Kaplan-Meier data from the study are plotted as black solid lines."}
+g <- studykm_survplot(modseq[[candmod$model[1]]]) +
+  geom_km(anova$ipd) +
+  ylab("PFS")
+plot(g)
+```
+
+
+```{r, results="hide", fig.cap="Predicted survival curves for IMpower150, estimated from 2nd order fractional polynomial of PFS for NS1. Survival predictions are plotted as coloured lines with shaded 95%CrIs. Kaplan-Meier data from the study are plotted as black solid lines."}
+surv <- survcalc(modseq[[candmod$model[1]]], times=seq(1, max(ipd$time[ipd$study=="KEYNOTE189"]), length.out = 100),
+                 refstudy="KEYNOTE189")
+g <- plot(surv, quantity = "S", treats = c("PPCT", "PCT"), overlay.km = TRUE) +
+  ylab("PFS")
+plot(g)
+```
+
+
+
+## Model fit results for UME
+
+No closed loops for this network
+
+## Dev-dev plots for UME vs NMA
+
+No closed loops for this network
+
+
+## Predicted survival curves for selected model with extrapolation
+
+I'll just choose one here.
+
+```{r, results="hide", fig.cap="Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial of PFS for all treatments at NS1."}
+surv <- survcalc(modseq[[candmod$model[1]]], times=seq(1, 52*3, length.out = 100),
+                 refstudy="KEYNOTE189")
+g <- plot(surv, quantity = "S", plotinterval = FALSE) + geom_line(linewidth=1) +
+  ylab("PFS")
+plot(g)
+```

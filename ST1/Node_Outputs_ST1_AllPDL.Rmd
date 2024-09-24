@@ -1,0 +1,882 @@
+---
+title: "NSCLC_Outputs - ST1 (PDL1 >50%, PDL1 1-49% & PDL1 <1%)"
+author: f("Hugo Pedder", "Ayman Sadek", "Nicky J Welton")
+date: "2024-01-05"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  options(knitr.kable.NA = '\\-'),
+  fig.height=5, 
+  fig.width=7
+  )
+```
+```{r, eval=FALSE, include=FALSE}
+devtools::install_github("hugaped/BristolTAG")
+```
+```{r, include=FALSE}
+library(BristolTAG)
+library(survival)
+library(ggplot2)
+library(tidyverse)
+source("NSCLC_functions.R")
+
+all.cols <- RColorBrewer::brewer.pal(9, "Set1")
+all.cols <- c(all.cols, RColorBrewer::brewer.pal(4, "Set2"))
+```
+
+The models in this analysis fit fractional polynomial models that relax the proportional hazards assumption. They assume no effect of histology (i.e. they do not differentiate between studies of Non-squamous or Squamous patients).
+
+They analyse all PDL1 threshold categories simultaneously, though results will be reported for each below in different sections. Note that this means that information will be shared on fractional polynomial powers across the thresholds (which is likely quite a plausible assumption). 
+
+We believe this model to be the most plausible that uses all the available data appropriately. The AnalysisComparison_ST1 document details our reasoning for this and compares different analyes.
+
+The treatment effect for CHECKMATE-078, which only reports results for PDL1>1%, has been split into 1-9% and >10% based on the % patients within these PDL1 categories in CM017 & CM57 (stratified by histology since the % differs quite a bit in both studies).
+
+Note that "PDL1 >50%" also includes CHECKMATE studies that report PDL1 >10%, since we assume that these categories are approximately similar. The PDL1 assays used in CHECKMATE vs other studies (e.g. KEYNOTE) are different, which is why the PDL1 numbers may change but the categories/thresholds themselves may be similar.
+
+Additionally, trials comparing Docetaxel, Pemetrexed and Pemetrexed + Carboplatin only report HRs (i.e. they assume proportional hazards) for non-squamous patients, so a proportional hazards NMA model comparing these treatments was performed and results from this model are combined with implied hazard ratio plots and survival predictions for non-squamous patients to obtain results for all treatments at ST1.
+
+
+## Load model results
+
+```{r}
+# modseq1 <- readRDS(file="JAGS_Results/ST1_AllPDL_PFS_fpoly1.RDS")
+# modseq2 <- readRDS(file="JAGS_Results/ST1_AllPDL_PFS_fpoly2.RDS")
+# modseq <- append(modseq1, modseq2)
+# class(modseq) <- "sequence.fpoly"
+```
+```{r}
+# Only shown for 2nd order models due to memory limitations
+modseq <- readRDS(file="JAGS_Results/ST1_AllPDL_PFS_fpoly2.RDS")
+```
+```{r}
+# Remove ZZ from study name
+for (mod in seq_along(modseq)) {
+  attributes(modseq[[mod]])$study <- 
+    gsub("(ZZ)(.+)(_>1%)", "\\2", attributes(modseq[[mod]])$study)
+  
+  attributes(modseq[[mod]])$studynames <- 
+    gsub("(ZZ)(.+)(_>1%)", "\\2", attributes(modseq[[mod]])$studynames)
+
+  attributes(modseq[[mod]])$ipd$study <- 
+    gsub("(ZZ)(.+)(_>1%)", "\\2", attributes(modseq[[mod]])$ipd$study)
+  
+  # Set mu[,2,] to be equal to mu[,1,] for mixed PDL studies (>1%)
+  # This ensures survival predictions will work properly, but note that if using survcalc() with a named refstudy it will therefore always use PDL1 >50% baseline
+  modseq[[mod]]$BUGSoutput$sims.list$mu[,,2,] <- modseq[[mod]]$BUGSoutput$sims.list$mu[,,1,]
+}
+```
+
+```{r}
+# Select the correct treatment parameters
+modseq.50 <- modseq
+modseq.1 <- modseq
+modseq.0 <- modseq
+for (mod in seq_along(modseq)) {
+  if (class(modseq[[mod]]) %in% "rjags") {
+    modseq.50[[mod]] <- select_pdl1(modseq.50[[mod]], pdl1=">50%")
+    modseq.1[[mod]] <- select_pdl1(modseq.1[[mod]], pdl1="1-49%")
+    modseq.0[[mod]] <- select_pdl1(modseq.0[[mod]], pdl1="<1%")
+  }
+}
+```
+
+## Load dataset
+
+```{r}
+ipd <- attributes(modseq[[1]])$ipd
+
+anova <- anova_data_st1(timepoints=seq(0,72, by=1),
+                    df=ipd)
+```
+
+```{r}
+hrmod <- readRDS(file="JAGS_Results/ST1_PFS_HR_Non-squamous_Genetic.RDS")
+d <- hrmod$BUGSoutput$sims.list$d
+```
+
+## Log-log plots
+
+```{r}
+ipd <- attr(modseq[[1]], "ipd")
+ipd$study <- gsub("ZZ", "", ipd$study)
+```
+
+### PDL1 >50%
+
+```{r, fig.cap="Log-log plots for PFS for studies reporting PDL1 >50% included in node ST1. Separation of the two lines indicates violation of the proportional hazards assumption. Note that data for CHECKMATE078 is from PDL1 >1%."}
+loglog_plot(subset(ipd, pdl1cat==1))
+```
+
+### PDL1 1-49%
+
+```{r, fig.cap="Log-log plots for PFS for studies reporting PDL1 1-49% included in node ST1. Separation of the two lines indicates violation of the proportional hazards assumption"}
+# ipdtemp <- subset(ipd, pdl1cat==2 & !(study=="KEYNOTE010" & time<0.0001))
+# loglog_plot(ipdtemp)
+loglog_plot(subset(ipd, pdl1cat==2))
+```
+
+
+### PDL1 <1%
+
+```{r, fig.cap="Log-log plots for PFS for studies reporting PDL1 <1% included in node ST1. Separation of the two lines indicates violation of the proportional hazards assumption"}
+# ipdtemp <- subset(ipd, pdl1cat==2 & !(study=="KEYNOTE010" & time<0.0001))
+# loglog_plot(ipdtemp)
+loglog_plot(subset(ipd, pdl1cat==3))
+```
+
+
+## Model fit statistics
+
+```{r}
+modfit <- sumst1.sequence.fpoly(modseq, pdl.dev=TRUE)
+
+noconv <- subset(modfit, is.na(converged))
+modfit <- subset(modfit, converged==TRUE)
+
+#modfit <- summary(modseq)
+#modfit <- rbind(summary(modseq1), summary(modseq2))
+
+# Drop models with errors
+#modfit <- modfit[!is.na(modfit$converged),]
+
+modfit <- arrange(modfit, DIC)
+
+candmod <- modfit[c(1, 3, 5, 7),]
+```
+
+```{r}
+# Only report FP powers
+knitr::kable(modfit[,c(-1,-ncol(modfit))], col.names=c("Power 1", "Power 2", "Residual deviance (overall)", "Residual deviance (PDL1 >50%)", "Residual deviance (PDL1 1-49%)", "Residual deviance (PDL1 <1%)", "pV", "DIC"),
+                  digits=1, 
+                  caption=paste0("Model fit statistics for successfully converged fractional polynomial models run on PFS for node ST1. Power 1 and Power 2 represent fractional polynomial powers. 1st order fractional polynomials only have a single power parameter (Power 1). Total number of data points = ", nrow(anova$aggregate), ", data points for PDL1 >50% = ", nrow(subset(anova$aggregate, pdl1cat==1)), ", data points for PDL1 1-49% = ", nrow(subset(anova$aggregate, pdl1cat==2)), ", data points for PDL1 <1% = ", nrow(subset(anova$aggregate, pdl1cat==3))))
+```
+
+Based on this, candidate models selected across all models are the following:
+
+```{r}
+knitr::kable(candmod[,c(-1,-ncol(modfit))], col.names=c("Power 1", "Power 2", "Residual deviance (overall)", "Residual deviance (PDL1 >50%)", "Residual deviance (PDL1 1-49%)", "Residual deviance (PDL1 <1%)", "pV", "DIC"),
+                  digits=1, 
+                  caption=paste0("Model fit statistics for candidate fractional polynomial models run on PFS for node ST1. Power 1 and Power 2 represent fractional polynomial powers. 1st order fractional polynomials only have a single power parameter (Power 1). Total number of data points = ", nrow(anova$aggregate), ", data points for PDL1 >50% = ", nrow(subset(anova$aggregate, pdl1cat==1)), ", data points for PDL1 1-49% = ", nrow(subset(anova$aggregate, pdl1cat==2)), ", data points for PDL1 <1% = ", nrow(subset(anova$aggregate, pdl1cat==3))))
+```
+
+Note that for PDL1 <1%, resdev3 indicates that one could select other candidate models. We will explore these as well when looking at results, hence why they have been included as candidate models despite having poorer DIC.
+
+
+## Plots of time-varying HRs
+
+### PDL1 >50%
+
+These are shown only for the candidate models, but additional ones could be specified here. Note that the model estimates treatment effects for all treatments regardless of the specific prognostic population (e.g. squamous, non-squamous, KRAS, etc.).
+
+```{r}
+all.treats <- attr(modseq[[1]], "trtnames")
+nsactive.treats <- c("Pemetrexed", 
+                     "Pemetrexed + Carboplatin",
+                     "Selpercatinib")
+all.treats <- append(all.treats, nsactive.treats)
+
+negpld.treats <- all.treats[!all.treats %in% c("Pembrolizumab")]
+```
+
+```{r}
+times <- seq(1, 150, length.out = 100)
+
+hazardrats <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  hr <- hrcalc(modseq.50[[candmod$model[mod]]], times=times, eform=TRUE)
+  hr <- hr$summary %>% mutate(model=candmod$model[mod])
+  hazardrats <- rbind(hazardrats, hr)
+}
+```
+
+```{r}
+# Add proportional hazards HRs versus Docetaxel
+hr.df <- get_ph.df(d, times=times,
+                   trt2="Docetaxel",
+                   trt1=nsactive.treats)
+  
+
+for (i in seq_along(unique(hazardrats$model))) {
+  hazardrats <- rbind(hazardrats, mutate(hr.df, model=unique(hazardrats$model)[i]))
+}
+```
+
+Plot panels of time-varying HRs for candidate models:
+
+```{r}
+g <- plot_hazardmodels(hazardrats, all.treats=all.treats,
+                       reftrt="Docetaxel")
+
+g + coord_cartesian(ylim=c(0,10))
+```
+
+
+Time-varying HRs for a single model with lowest DIC (if needed):
+
+```{r}
+hazardrats <- hrcalc(modseq.50[[candmod$model[1]]], times=seq(1, 150, length.out = 100), eform=TRUE)
+```
+
+```{r}
+hazardrats$summary <- rbind(hazardrats$summary, hr.df)
+
+attributes(hazardrats)$trtnames <- c(attributes(hazardrats)$trtnames,
+                                     nsactive.treats)
+```
+
+```{r, fig.cap="Time-varying (implied) hazard ratios for all treatments versus Chemotherapy for PDL1 >50%, estimated from 2nd order fractional polynomial of PFS for ST1. Shaded regions represent 95%CrIs"}
+g <- plot(hazardrats, reftrt="Docetaxel")
+g + geom_line(linewidth=0.8) + coord_cartesian(ylim=c(0,10))
+```
+
+
+### PDL1 1-49%
+
+These are shown only for the candidate models, but additional ones could be specified here. Note that the model estimates treatment effects for all treatments regardless of the specific prognostic population (e.g. squamous, non-squamous, KRAS, etc.).
+
+```{r}
+times <- seq(1, 150, length.out = 100)
+
+hazardrats <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  hr <- hrcalc(modseq.1[[candmod$model[mod]]], times=times, eform=TRUE)
+  hr <- hr$summary %>% mutate(model=candmod$model[mod])
+  hazardrats <- rbind(hazardrats, hr)
+}
+```
+
+```{r}
+# Add proportional hazards HRs versus Docetaxel
+hr.df <- get_ph.df(d, times=times,
+                   trt2="Docetaxel",
+                   trt1=nsactive.treats)
+
+for (i in seq_along(unique(hazardrats$model))) {
+  hazardrats <- rbind(hazardrats, mutate(hr.df, model=unique(hazardrats$model)[i]))
+}
+```
+
+Plot panels of time-varying HRs for candidate models:
+
+```{r}
+g <- plot_hazardmodels(hazardrats, all.treats=all.treats,
+                       reftrt="Docetaxel")
+
+g + coord_cartesian(ylim=c(0,10))
+```
+
+
+Time-varying HRs for a single model with lowest DIC (if needed):
+
+```{r}
+hazardrats <- hrcalc(modseq.1[[candmod$model[1]]], times=seq(1, 150, length.out = 100), eform=TRUE)
+```
+
+```{r}
+hazardrats$summary <- rbind(hazardrats$summary, hr.df)
+
+attributes(hazardrats)$trtnames <- c(attributes(hazardrats)$trtnames,
+                                     nsactive.treats)
+```
+
+
+```{r, fig.cap="Time-varying (implied) hazard ratios for all treatments versus Chemotherapy for PDL1 1-49%, estimated from 2nd order fractional polynomial of PFS for ST1. Shaded regions represent 95%CrIs"}
+g <- plot(hazardrats, reftrt="Docetaxel")
+g + geom_line(linewidth=0.8) + coord_cartesian(ylim=c(0,10))
+```
+
+
+### PDL1 <1%%
+
+These are shown only for the candidate models, but note that there are 2 additional models than for other PDL1 categories, since these also fitted the data well for PDL1 <1%. Note that the model estimates treatment effects for all treatments regardless of the specific prognostic population (e.g. squamous, non-squamous, KRAS, etc.).
+
+```{r}
+times <- seq(1, 150, length.out = 100)
+
+hazardrats <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  hr <- hrcalc(modseq.0[[candmod$model[mod]]], times=times, eform=TRUE)
+  hr <- hr$summary %>% mutate(model=candmod$model[mod])
+  hazardrats <- rbind(hazardrats, hr)
+}
+```
+
+```{r}
+# Add proportional hazards HRs versus Docetaxel
+hr.df <- get_ph.df(d, times=times,
+                   trt2="Docetaxel",
+                   trt1=nsactive.treats)
+
+for (i in seq_along(unique(hazardrats$model))) {
+  hazardrats <- rbind(hazardrats, mutate(hr.df, model=unique(hazardrats$model)[i]))
+}
+```
+
+Plot panels of time-varying HRs for candidate models:
+
+```{r}
+g <- plot_hazardmodels(hazardrats, all.treats=negpld.treats,
+                       reftrt="Docetaxel")
+
+g + coord_cartesian(ylim=c(0,10))
+```
+
+
+Time-varying HRs for a single model with lowest DIC (if needed):
+
+```{r}
+hazardrats <- hrcalc(modseq.0[[candmod$model[1]]], times=seq(1, 150, length.out = 100), eform=TRUE)
+```
+
+```{r}
+hazardrats$summary <- rbind(hazardrats$summary, hr.df)
+
+attributes(hazardrats)$trtnames <- c(attributes(hazardrats)$trtnames,
+                                     nsactive.treats)
+```
+
+
+```{r, fig.cap="Time-varying (implied) hazard ratios for all treatments versus Chemotherapy for PDL1 1-49%, estimated from 2nd order fractional polynomial of PFS for ST1. Shaded regions represent 95%CrIs"}
+g <- plot(hazardrats, treats=negpld.treats,
+          reftrt="Docetaxel")
+g + geom_line(linewidth=0.8) + coord_cartesian(ylim=c(0,10))
+```
+
+
+# Survival predictions against KM data (to explore model fit)
+
+## Plot of survival predictions and KM data for each study (PDL1 >50%)
+
+Plot with KM for plausible model with lowest DIC:
+
+```{r, results="hide", fig.cap="Predicted survival curves for included studies from selected 2nd order fractional polynomial of PFS for PDL1 >50% at ST1. Survival predictions are plotted as coloured lines with shaded 95%CrIs. Kaplan-Meier data from the study are plotted as black solid lines. Note that this plot does not include predictions from treatments modelled using proportional hazards"}
+g <- studykm_survplot(modseq.50[[candmod$model[1]]]) +
+  geom_km(subset(anova$ipd, pdl1cat==1 & study!="CHECKMATE078")) +
+  ylab("PFS")
+plot(g)
+```
+
+Note that CHECKMATE-078 Kaplan-Meier data is not plotted as this data combines both PDL1 >10% and PDL1 1-9%.
+
+
+## Plot of survival predictions and KM data for each study (PDL1 1-49%)
+
+Plot with KM for plausible model with lowest DIC:
+
+```{r, results="hide", fig.cap="Predicted survival curves for included studies from selected 2nd order fractional polynomial of PFS for PDL1 1-49% at ST1. Survival predictions are plotted as coloured lines with shaded 95%CrIs. Kaplan-Meier data from the study are plotted as black solid lines. Note that this plot does not include predictions from treatments modelled using proportional hazards."}
+g <- studykm_survplot(modseq.1[[candmod$model[1]]]) +
+  geom_km(subset(anova$ipd, pdl1cat==2 & study!="CHECKMATE078")) +
+  ylab("PFS")
+plot(g)
+```
+
+Note that CHECKMATE-078 Kaplan-Meier data is not plotted as this data combines both PDL1 >10% and PDL1 1-9%.
+
+
+## Plot of survival predictions and KM data for each study (PDL1 <1%)
+
+Plot with KM for plausible model with lowest overall DIC:
+
+```{r, results="hide", fig.cap="Predicted survival curves for included studies from selected (based on DIC) 2nd order fractional polynomial of PFS for PDL1 <1% at ST1. Survival predictions are plotted as coloured lines with shaded 95%CrIs. Kaplan-Meier data from the study are plotted as black solid lines. Note that this plot does not include predictions from treatments modelled using proportional hazards."}
+studies <- attr(modseq.1[[1]], "studynames")
+studies <- studies[!studies %in% c("KEYNOTE010", "KEYNOTE033")]
+
+g <- studykm_survplot(modseq.0[[candmod$model[1]]], studies=studies) +
+  geom_km(subset(anova$ipd, pdl1cat==3)) +
+  ylab("PFS")
+plot(g)
+```
+
+
+
+# Comparison of different fractional polynomial models on survival predictions
+
+```{r}
+all.treats <- attributes(modseq[[1]])$trtnames
+ns.treats <- c("Docetaxel", "Pemetrexed", "Pemetrexed + Carboplatin", "Selpercatinib")
+all.treats <- c(all.treats, ns.treats[2:length(ns.treats)])
+```
+
+```{r}
+# 2nd order FP reference models
+refseq.ns <- readRDS(file="JAGS_Results/ST1_PFS_fpoly2_CM057.RDS")
+refseq.s <- readRDS(file="JAGS_Results/ST1_PFS_fpoly2_CM017.RDS")
+refseq.ret <- readRDS(file="JAGS_Results/ST1_PFS_fpoly2_LIBRETTO-001.RDS")
+```
+
+## Non-squamous, PDL1 >50%
+
+```{r}
+plot.treats <- all.treats
+times <- seq(1, 75, length.out = 100)
+```
+
+
+```{r}
+surv <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  smod <- survcalc(modseq.50[[candmod$model[mod]]], refstudy="CHECKMATE057",
+                   refmod=refseq.ns[[candmod$model[mod]]],
+                times=times)
+  smod2 <- smod$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, smod2)
+}
+```
+
+```{r}
+# Add proportional hazards model results
+for (mod in seq_along(candmod$model)) {
+  surv.hr <- hr_survival(d=d, jagsmod=modseq.50[[candmod$model[mod]]],
+            times=times,
+            trtnames=ns.treats,
+            refstudy="CHECKMATE057")
+  
+  surv.hr <- surv.hr$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, surv.hr)
+}
+```
+
+```{r}
+g <- plot_survivalmods(surv.df=surv, 
+                       all.treats=all.treats, plot.treats=plot.treats,
+                       refstudy=attr(smod, "refstudy")
+                       )
+
+plot(g)
+```
+
+
+## Non-squamous, PDL1 1-49%
+
+```{r}
+plot.treats <- all.treats
+times <- seq(1, 75, length.out = 100)
+```
+
+```{r}
+surv <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  smod <- survcalc(modseq.1[[candmod$model[mod]]], refstudy="CHECKMATE057",
+                   refmod=refseq.ns[[candmod$model[mod]]],
+                times=times)
+  smod2 <- smod$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, smod2)
+}
+```
+
+```{r}
+# Add proportional hazards model results
+for (mod in seq_along(candmod$model)) {
+  surv.hr <- hr_survival(d=d, jagsmod=modseq.1[[candmod$model[mod]]],
+            times=times,
+            trtnames=ns.treats,
+            refstudy="CHECKMATE057")
+  
+  surv.hr <- surv.hr$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, surv.hr)
+}
+```
+
+```{r}
+g <- plot_survivalmods(surv.df=surv, 
+                       all.treats=all.treats, plot.treats=plot.treats,
+                       refstudy=attr(smod, "refstudy")
+                       )
+
+plot(g)
+```
+
+
+## Non-squamous, PDL1 <1%
+
+```{r}
+plot.treats <- all.treats[!all.treats %in% c("Pembrolizumab", "Nivolumab")]
+times <- seq(1, 75, length.out = 100)
+```
+
+```{r}
+surv <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  smod <- survcalc(modseq.0[[candmod$model[mod]]], refstudy="CHECKMATE057",
+                   refmod=refseq.ns[[candmod$model[mod]]],
+                times=times)
+  smod2 <- smod$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, smod2)
+}
+```
+
+```{r}
+# Add proportional hazards model results
+for (mod in seq_along(candmod$model)) {
+  surv.hr <- hr_survival(d=d, jagsmod=modseq.1[[candmod$model[mod]]],
+            times=times,
+            trtnames=ns.treats,
+            refstudy="CHECKMATE057")
+  
+  surv.hr <- surv.hr$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, surv.hr)
+}
+```
+
+```{r}
+g <- plot_survivalmods(surv.df=surv, 
+                       all.treats=all.treats, plot.treats=plot.treats,
+                       refstudy=attr(smod, "refstudy")
+                       )
+
+plot(g)
+```
+
+
+
+## Squamous, PDL1 >50%
+
+```{r}
+plot.treats <- all.treats[!all.treats %in% ns.treats[2:length(ns.treats)]]
+times <- seq(1, 75, length.out = 100)
+```
+
+```{r}
+surv <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  smod <- survcalc(modseq.50[[candmod$model[mod]]], refstudy="CHECKMATE017",
+                   refmod=refseq.s[[candmod$model[mod]]],
+                times=times)
+  smod2 <- smod$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, smod2)
+}
+```
+
+```{r}
+# Add proportional hazards model results
+for (mod in seq_along(candmod$model)) {
+  surv.hr <- hr_survival(d=d, jagsmod=modseq.50[[candmod$model[mod]]],
+            times=times,
+            trtnames=c("Docetaxel", "Pemetrexed", "Pemetrexed + Carboplatin"),
+            refstudy="CHECKMATE057")
+  
+  surv.hr <- surv.hr$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, surv.hr)
+}
+```
+
+```{r}
+g <- plot_survivalmods(surv.df=surv, 
+                       all.treats=all.treats, plot.treats=plot.treats,
+                       refstudy=attr(smod, "refstudy")
+                       )
+
+plot(g)
+```
+
+
+## Squamous, PDL1 1-49%
+
+```{r}
+plot.treats <- all.treats[!all.treats %in% ns.treats[2:length(ns.treats)]]
+times <- seq(1, 75, length.out = 100)
+```
+
+```{r}
+surv <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  smod <- survcalc(modseq.1[[candmod$model[mod]]], refstudy="CHECKMATE017",
+                   refmod=refseq.s[[candmod$model[mod]]],
+                times=times)
+  smod2 <- smod$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, smod2)
+}
+```
+
+```{r}
+# Add proportional hazards model results
+for (mod in seq_along(candmod$model)) {
+  surv.hr <- hr_survival(d=d, jagsmod=modseq.1[[candmod$model[mod]]],
+            times=times,
+            trtnames=c("Docetaxel", "Pemetrexed", "Pemetrexed + Carboplatin"),
+            refstudy="CHECKMATE057")
+  
+  surv.hr <- surv.hr$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, surv.hr)
+}
+```
+
+```{r}
+g <- plot_survivalmods(surv.df=surv, 
+                       all.treats=all.treats, plot.treats=plot.treats,
+                       refstudy=attr(smod, "refstudy")
+                       )
+
+plot(g)
+```
+
+
+## Squamous, PDL1 <1%
+
+```{r}
+plot.treats <- all.treats[!all.treats %in% c(ns.treats[2:length(ns.treats)], "Pembrolizumab", "Nivolumab")]
+times <- seq(1, 75, length.out = 100)
+```
+
+```{r}
+surv <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  smod <- survcalc(modseq.0[[candmod$model[mod]]], refstudy="CHECKMATE017",
+                   refmod=refseq.s[[candmod$model[mod]]],
+                times=times)
+  smod2 <- smod$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, smod2)
+}
+```
+
+```{r}
+# Add proportional hazards model results
+for (mod in seq_along(candmod$model)) {
+  surv.hr <- hr_survival(d=d, jagsmod=modseq.1[[candmod$model[mod]]],
+            times=times,
+            trtnames=c("Docetaxel", "Pemetrexed", "Pemetrexed + Carboplatin"),
+            refstudy="CHECKMATE057")
+  
+  surv.hr <- surv.hr$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, surv.hr)
+}
+```
+
+```{r}
+g <- plot_survivalmods(surv.df=surv, 
+                       all.treats=all.treats, plot.treats=plot.treats,
+                       refstudy=attr(smod, "refstudy")
+                       )
+
+plot(g)
+```
+
+
+
+# Multivariate normal parameters from candidate models to use in economic model
+
+Note that this exports treatment effects for all treatments included in the model. However, only some of these will be relevant and should be applied to a reference curve for specific populations (e.g. KRAS, RET fusion mutations).
+
+These will be saved to an excel file. Note that treatment effects are the same for squamous and non-squamous and it is only the reference studies that differ. Therefore only the treatment effects will be provided in the Excel files, and these can then easily be applied to any choice of reference curve.
+
+```{r}
+library(officer)
+
+# CODE FOR COMPARISONS WITH DOCETAXEL
+hrmod <- readRDS(file="JAGS_Results/ST1_PFS_HR_Non-squamous_Genetic.RDS")
+d <- hrmod$BUGSoutput$sims.list$d
+d <- d[,attributes(hrmod)$trtnames!="Selpercatinib"]
+
+
+info.df <- data.frame("Title"=c("Fractional polynomial multivariate normal distribution of MCMC samples - means and covariances for key model parameters",
+                                      "Parameters named by the treatment refer to the relative treatment effect for each fractional polynomial coefficient (1-3)",
+                                "Results for treatments modelled assuming constant HRs have been combined into fractional polynomial model results.", 
+                                "For this reason, the covariance between some active treatment parameters is equal to 0"))
+
+# Choose save location
+wb <- openxlsx::createWorkbook(title="ST1")
+openxlsx::addWorksheet(wb=wb, sheetName="Info")
+openxlsx::writeDataTable(wb=wb, sheet="Info", 
+                         x=info.df)
+
+for (i in 1:nrow(candmod)) {
+  
+  # PDL1 >50%
+  mod <- modseq.50[[candmod$model[i]]]
+  
+  sheetnam <- 
+    paste("FP", mod$model$data()$P1, mod$model$data()$P2, ">50%", sep="_")
+  openxlsx::addWorksheet(wb=wb, sheetName=sheetnam)
+  
+  mvn <- output_coda_fp_st1(mod, format="mvn",
+                        treatments=all.treats[!all.treats %in% ns.treats[2:4]],
+                        d.hr=d,
+                        d.treatments=ns.treats[1:3],
+                        refstudy=NULL)
+  
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$mean), rowNames = TRUE)
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$covar), startCol=4,
+                           rowNames = TRUE, colNames = TRUE)
+  
+  
+  # PDL1 1-49%
+  mod <- modseq.1[[candmod$model[i]]]
+  
+  sheetnam <- 
+    paste("FP", mod$model$data()$P1, mod$model$data()$P2, "1-49%", sep="_")
+  openxlsx::addWorksheet(wb=wb, sheetName=sheetnam)
+  
+  mvn <- output_coda_fp_st1(mod, format="mvn",
+                        treatments=all.treats[!all.treats %in% ns.treats[2:4]],
+                        d.hr=d,
+                        d.treatments=ns.treats[1:3],
+                        refstudy=NULL)
+  
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$mean), rowNames = TRUE)
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$covar), startCol=4,
+                           rowNames = TRUE, colNames = TRUE)
+  
+  
+  # PDL1<1%
+  mod <- modseq.0[[candmod$model[i]]]
+  
+  sheetnam <- 
+    paste("FP", mod$model$data()$P1, mod$model$data()$P2, "<1%", sep="_")
+  openxlsx::addWorksheet(wb=wb, sheetName=sheetnam)
+  
+  mvn <- output_coda_fp_st1(mod, format="mvn",
+                        treatments=all.treats[!all.treats %in% ns.treats[2:4]],
+                        d.hr=d,
+                        d.treatments=ns.treats[1:3],
+                        refstudy=NULL)
+  
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$mean), rowNames = TRUE)
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$covar), startCol=4,
+                           rowNames = TRUE, colNames = TRUE)
+}
+
+# Add tab for constant HR treatments
+# sheetnam <- "Constant_logHRs"
+#   openxlsx::addWorksheet(wb=wb, sheetName=sheetnam)
+#   
+#   mvn <- list(mean=as.matrix(apply(d, MARGIN=2, mean, drop=FALSE)),
+#               covar=cov(d))
+#   
+#   rownames(mvn$mean) <- ns.treats
+#   rownames(mvn$covar) <- ns.treats
+#   colnames(mvn$covar) <- ns.treats
+#   
+#   openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$mean), rowNames = TRUE)
+#   openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$covar), startCol=4,
+#                            rowNames = TRUE, colNames = TRUE)
+
+
+openxlsx::saveWorkbook(wb=wb, file="MVN_ST1.xlsx", overwrite=TRUE)
+```
+
+
+```{r}
+# CODE FOR COMPARISONS WITH SELPERCATINIB (Genetic Matching Algorithm)
+hrmod <- readRDS(file="JAGS_Results/ST1_PFS_HR_Non-squamous_Genetic.RDS")
+d <- hrmod$BUGSoutput$sims.list$d
+
+refmod <- refseq.ret[[candmod$model[1]]]
+
+# Adjust model parameter estimates to be relative to selpercatinib
+hrnames <- attributes(hrmod)$trtnames
+
+# Select d values for Docteaxel vs Selpercatinib
+d.selper <- d[,which(hrnames=="Selpercatinib"), drop=FALSE]
+adj.d <- apply(d[,-which(hrnames=="Selpercatinib"), drop=FALSE],
+               MARGIN=2, 
+               FUN=function(x) {x-d.selper})
+adj.d <- cbind(matrix(0, ncol=1, nrow=nrow(adj.d)), adj.d)
+
+
+info.df <- data.frame("Title"=c("Fractional polynomial multivariate normal distribution of MCMC samples - means and covariances for key model parameters",
+                                      "Parameters named by the treatment refer to the relative treatment effect for each fractional polynomial coefficient (1-3)",
+                                "Results for treatments modelled assuming constant HRs have been combined into fractional polynomial model results.", 
+                                "For this reason, the covariance between some active treatment parameters is equal to 0"))
+
+# Choose save location
+wb <- openxlsx::createWorkbook(title="ST1_RET+")
+openxlsx::addWorksheet(wb=wb, sheetName="Info")
+openxlsx::writeDataTable(wb=wb, sheet="Info", 
+                         x=info.df)
+
+for (i in 1:nrow(candmod)) {
+  
+  # PDL1 >50%
+  mod <- modseq.50[[candmod$model[i]]]
+  
+  # Adjust FP model to make it relative to Selpercatinib by applying constant HR
+  mod <- fp_applyhr(d=d.selper, # Docetaxel vs Selpercatinib
+                    jagsmod=mod,
+                    refmod=refmod,
+                    reftrt="Selpercatinib"
+                    )
+  
+  sheetnam <- 
+    paste("FP", mod$model$data()$P1, mod$model$data()$P2, ">50%", sep="_")
+  openxlsx::addWorksheet(wb=wb, sheetName=sheetnam)
+  
+  mvn <- output_coda_fp_st1(mod, format="mvn",
+                        treatments=c("Selpercatinib", 
+                                     all.treats[!all.treats %in% ns.treats[2:4]]),
+                        d.hr=adj.d,
+                        d.treatments=ns.treats[c(4,1:3)], # treatment names reorderes
+                        refstudy=NULL)
+  
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$mean), rowNames = TRUE)
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$covar), startCol=4,
+                           rowNames = TRUE, colNames = TRUE)
+  
+  
+  # PDL1 1-49%
+  mod <- modseq.1[[candmod$model[i]]]
+  
+  # Adjust FP model to make it relative to Selpercatinib by applying constant HR
+  mod <- fp_applyhr(d=d.selper, # Docetaxel vs Selpercatinib
+                    jagsmod=mod,
+                    refmod=refmod,
+                    reftrt="Selpercatinib"
+                    )
+  
+  sheetnam <- 
+    paste("FP", mod$model$data()$P1, mod$model$data()$P2, "1-49%", sep="_")
+  openxlsx::addWorksheet(wb=wb, sheetName=sheetnam)
+  
+  mvn <- output_coda_fp_st1(mod, format="mvn",
+                        treatments=c("Selpercatinib", 
+                                     all.treats[!all.treats %in% ns.treats[2:4]]),
+                        d.hr=adj.d,
+                        d.treatments=ns.treats[c(4,1:3)], # treatment names reorderes
+                        refstudy=NULL)
+  
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$mean), rowNames = TRUE)
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$covar), startCol=4,
+                           rowNames = TRUE, colNames = TRUE)
+  
+  
+  # PDL1<1%
+  mod <- modseq.0[[candmod$model[i]]]
+  
+  # Adjust FP model to make it relative to Selpercatinib by applying constant HR
+  mod <- fp_applyhr(d=d.selper, # Docetaxel vs Selpercatinib
+                    jagsmod=mod,
+                    refmod=refmod,
+                    reftrt="Selpercatinib"
+                    )
+  
+  sheetnam <- 
+    paste("FP", mod$model$data()$P1, mod$model$data()$P2, "<1%", sep="_")
+  openxlsx::addWorksheet(wb=wb, sheetName=sheetnam)
+  
+  mvn <- output_coda_fp_st1(mod, format="mvn",
+                        treatments=c("Selpercatinib", 
+                                     all.treats[!all.treats %in% ns.treats[2:4]]),
+                        d.hr=adj.d,
+                        d.treatments=ns.treats[c(4,1:3)], # treatment names reorderes
+                        refstudy=NULL)
+  
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$mean), rowNames = TRUE)
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$covar), startCol=4,
+                           rowNames = TRUE, colNames = TRUE)
+}
+
+openxlsx::saveWorkbook(wb=wb, file="MVN_ST1_RET+Gen.xlsx", overwrite=TRUE)
+```
+
+
+## Model fit results for UME (ST1)
+
+No closed loops for this network
+
+## Dev-dev plots for UME vs NMA (ST1)
+
+No closed loops for this network
+

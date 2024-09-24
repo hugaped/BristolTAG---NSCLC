@@ -1,0 +1,36 @@
+#Fixed effects 2nd order fractional polynomial model (e.g. Weibull (P1=0) and Gompertz (P1=1))
+model{                         	  # *** PROGRAM STARTS
+for (j in 1:N){   							   # LOOP THROUGH EVENTS
+
+	# time in months transformed according to power P1 
+	  timen1[j] <- (equals(P1,0) * log(time[j]) + (1-equals(P1,0)) * pow(time[j],P1)   ) 
+	  timen2[j] <- (  (1-equals(P2,P1)) * (   equals(P2,0) * log(time[j]) + (1-equals(P2,0)) * pow(time[j],P2)  ) + equals(P2,P1) * (   equals(P2,0) * log(time[j])*log(time[j])   +   (1-equals(P2,0)) * pow(time[j],P2) * log(time[j]) ) )
+
+	  r[j] ~ dbin(p[j], z[j])      		  # likelihood according to eq. 
+	  p[j] <- 1-exp(-h[j]*dt[j])   		  # hazard rate in each interval standardized by unit of time
+
+	#Fixed effects model
+	# hazard over time according to FP
+	  log(h[j]) <- Alpha[s[j],a[j],1] + Alpha[s[j],a[j],2] * timen1[j] + Alpha[s[j],a[j],3] * timen2[j] 
+	  
+	#Deviance contribution
+	rhat[j] <- p[j] * z[j]  # expected value of the numerators
+	dev[j] <- (2*(r[j]*(log(r[j])-log(rhat[j])) + (z[j]-r[j])*(log(z[j]-r[j]) - log(z[j]-	rhat[j]))))
+ }
+
+for (i in 1:ns){                  # LOOP THROUGH STUDIES
+  for (k in 1:na[i]){             # LOOP THROUGH ARMS
+    Alpha[i,k,1] <- mu[i,1] 	# model for linear predictor of alpha_0 
+    Alpha[i,k,2] <- mu[i,2] 	# model for linear predictor of alpha_1
+    Alpha[i,k,3] <- mu[i,3]		# model for linear predictor of alpha_2
+   }
+ }
+ 
+ totresdev <- sum(dev[])           #Total Residual Deviance
+
+     
+#priors
+for (i in 1:ns){        		      # LOOP THROUGH STUDIES
+  mu[i,1:3] ~ dmnorm(mean[1:3], prec[1:3,1:3])   # vague priors for all trial baselines 
+ }
+}                                 # *** PROGRAM ENDS

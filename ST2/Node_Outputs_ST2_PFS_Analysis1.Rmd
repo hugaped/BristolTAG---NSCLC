@@ -1,0 +1,324 @@
+---
+title: "NSCLC_Outputs - ST2 PFS, assuming no histology effect modification"
+author: f("Hugo Pedder", "Ayman Sadek", "Nicky J Welton")
+date: "2024-01-31"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  options(knitr.kable.NA = '\\-'),
+  fig.height=5, 
+  fig.width=7
+  )
+```
+```{r, eval=FALSE, include=FALSE}
+devtools::install_github("hugaped/BristolTAG")
+```
+```{r, include=FALSE}
+library(BristolTAG)
+library(survival)
+library(ggplot2)
+library(tidyverse)
+source("NSCLC_functions.R")
+
+all.cols <- RColorBrewer::brewer.pal(9, "Set1")
+all.cols <- c(all.cols, RColorBrewer::brewer.pal(4, "Set2"))
+```
+
+The models in Analysis 1 fit fractional polynomial models that relax the proportional hazards assumption. They assume no effect of histology (i.e. they do not differentiate between studies of Non-squamous or Squamous patients).
+
+## Load model results
+
+```{r}
+modseq1 <- readRDS(file="JAGS_Results/ST2_PFS_fpoly1_Analysis1.RDS")
+modseq2 <- readRDS(file="JAGS_Results/ST2_PFS_fpoly2_Analysis1.RDS")
+modseq <- append(modseq1, modseq2)
+class(modseq) <- "sequence.fpoly"
+```
+
+
+## Load dataset
+
+```{r}
+ipd <- attributes(modseq[[1]])$ipd
+
+anova <- anova_data(timepoints=seq(0,16, by=1),
+                    df=ipd)
+```
+
+## Log-log plots
+
+```{r, fig.cap="Log-log plots for PFS for studies included in node ST2. Separation of the two lines indicates violation of the proportional hazards assumption"}
+ipd <- attr(modseq1[[1]], "ipd")
+
+loglog_plot(ipd)
+```
+
+
+## Model fit statistics
+
+```{r}
+modfit <- summary(modseq)
+
+noconv <- subset(modfit, converged==FALSE)
+modfit <- subset(modfit, converged==TRUE)
+
+modfit <- rbind(summary(modseq1), summary(modseq2))
+
+# Drop models with errors
+modfit <- modfit[!is.na(modfit$converged),]
+
+modfit <- arrange(modfit, DIC)
+
+candmod <- modfit[c(1,2,4),]
+```
+
+```{r}
+# Only report FP powers
+knitr::kable(modfit[,c(-1,-7)], col.names=c("Power 1", "Power 2", "Residual deviance", "pV", "DIC"),
+                  digits=1, 
+                  caption=paste0("Model fit statistics for successfully converged fractional polynomial models run on PFS for node ST2. Power 1 and Power 2 represent fractional polynomial powers. 1st order fractional polynomials only have a single power parameter (Power 1). Total number of data points = ", nrow(anova$aggregate)))
+```
+
+Based on this, candidate models are the following:
+
+```{r}
+knitr::kable(candmod[,c(-1,-7)], col.names=c("Power 1", "Power 2", "Residual deviance", "pV", "DIC"),
+                  digits=1, 
+                  caption=paste0("Model fit statistics for candidate fractional polynomial models run on PFS for nodes node ST2. Power 1 and Power 2 represent fractional polynomial powers. 1st order fractional polynomials only have a single power parameter (Power 1). Total number of data points = ", nrow(anova$aggregate)))
+```
+
+
+## Plots of time-varying HRs
+
+```{r}
+all.treats <- attr(modseq[[1]], "trtnames")
+```
+
+These are shown only for the 4 candidate models, but additional ones could be specified here. Note that the model estimates treatment effects for all treatments regardless of the specific prognostic population (e.g. squamous, non-squamous).
+
+```{r}
+times <- seq(1, 52, length.out = 100)
+
+hazardrats <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  hr <- hrcalc(modseq[[candmod$model[mod]]], times=times, eform=TRUE)
+  hr <- hr$summary %>% mutate(model=candmod$model[mod])
+  hazardrats <- rbind(hazardrats, hr)
+}
+```
+
+Plot panels of time-varying HRs for candidate models:
+
+```{r}
+g <- plot_hazardmodels(hazardrats, all.treats=all.treats,
+                       reftrt="Docetaxel")
+
+plot(g)
+```
+
+
+Time-varying HRs for a single plausible model with lowest DIC (if needed):
+
+```{r}
+hazardrats <- hrcalc(modseq[[candmod$model[1]]], times=seq(1, 52, length.out = 100), eform=TRUE)
+```
+```{r, fig.cap="Time-varying (implied) hazard ratios for all treatments versus Chemotherapy, estimated from 2nd order fractional polynomial of PFS for ST1 excl CHECKMATE-078. Shaded regions represent 95%CrIs"}
+g <- plot(hazardrats, reftrt="Docetaxel")
+g + geom_line(linewidth=0.8)
+```
+
+# Survival predictions
+
+## Plot of survival predictions and KM data for each study
+
+Plot with KM for plausible model with lowest DIC, 2nd order fractional polynomial:
+
+Fit seems really quite poor here to the study...PFS prediction doesn't seem to match the KM data that well.
+
+```{r, results="hide", fig.cap="Predicted survival curves for included studies estimated from selected 2nd order fractional polynomial of PFS for ST2. Survival predictions are plotted as coloured lines with shaded 95%CrIs. Kaplan-Meier data from the study are plotted as black solid lines. Note that this plot does not include predictions from treatments modelled using proportional hazards"}
+g <- studykm_survplot(modseq[[candmod$model[1]]]) +
+  geom_km(anova$ipd) +
+  ylab("PFS")
+plot(g)
+```
+
+
+## Survival predictions for non-squamous patients (ST2)
+
+Selected reference study for ST2 non-squamous patients is the non-squamous subgroup of **LUME-Lung 1**
+
+```{r}
+all.treats <- attributes(modseq[[1]])$trtnames
+plot.treats <- all.treats
+```
+
+```{r}
+refseq <- readRDS("JAGS_Results/ST2_PFS_fpoly2_LUMELung1.NS.RDS")
+refstudy <- "LUME-Lung1"
+```
+
+### Plots of survival predictions for different models (ST2, Non-squamous)
+
+```{r}
+surv <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  smod <- survcalc(modseq[[candmod$model[mod]]], refstudy=refstudy, 
+                   refmod = refseq[[candmod$model[mod]]],
+                times=seq(1, 52, length.out = 100))
+  smod2 <- smod$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, smod2)
+}
+```
+
+```{r}
+g <- plot_survivalmods(surv.df=surv, 
+                       all.treats=all.treats, plot.treats=plot.treats,
+                       refstudy=attr(smod, "refstudy")
+                       )
+
+plot(g)
+```
+
+
+### Predicted survival curves for selected model with extrapolation (ST2, Non-squamous)
+
+I'll just choose one here.
+
+```{r, results="hide", fig.cap="Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial) of PFS for all treatments at ST2."}
+surv <- survcalc(modseq[[candmod$model[1]]], times=seq(1, 52, length.out = 100),
+                 refmod=refseq[[candmod$model[1]]],
+                 refstudy=refstudy
+                 )
+
+
+g <- plot(surv, quantity = "S", plotinterval = FALSE, treats=plot.treats) + 
+  geom_line(linewidth=1) +
+  ylab("PFS")
+plot(g)
+```
+
+Median survival for each treatment within selected model:
+
+```{r, eval=FALSE}
+# Note that interval has to be wide enough to allow for ALL potential MCMC median survival estimates
+surv <- survquantile(modseq[[candmod$model[1]]], refstudy=refstudy,
+                 quantile=0.5, interval=c(0.1,100))
+tab <- print(surv)
+
+knitr::kable(tab, digits=2, 
+                  caption="Median survival for the fractional polynomial model reported above")
+```
+
+
+## Survival predictions for squamous patients (ST2)
+
+Selected reference study for ST2 squamous patients is the squamous subgroup of **LUME-Lung1**
+
+```{r}
+all.treats <- attributes(modseq[[1]])$trtnames
+plot.treats <- all.treats
+```
+
+```{r}
+refseq <- readRDS("JAGS_Results/ST2_PFS_fpoly2_LUMELung1.S.RDS")
+refstudy <- "LUME-Lung1"
+```
+
+### Plots of survival predictions for different models (ST2, Squamous)
+
+```{r}
+surv <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  smod <- survcalc(modseq[[candmod$model[mod]]], refstudy=refstudy,
+                   refmod=refseq[[candmod$model[mod]]],
+                times=seq(1, 52, length.out = 100))
+  smod2 <- smod$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, smod2)
+}
+```
+
+```{r}
+g <- plot_survivalmods(surv.df=surv, 
+                       all.treats=all.treats, plot.treats=plot.treats,
+                       refstudy=attr(smod, "refstudy")
+                       )
+
+plot(g)
+```
+
+
+### Predicted survival curves for selected model with extrapolation (ST2, Squamous)
+
+I'll just choose one here.
+
+```{r, results="hide", fig.cap="Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial) of PFS for all treatments at ST2."}
+surv <- survcalc(modseq[[candmod$model[1]]], times=seq(1, 52, length.out = 100),
+                 refmod=refseq[[candmod$model[1]]],
+                 refstudy=refstudy
+                 )
+g <- plot(surv, quantity = "S", plotinterval = FALSE, treats="Docetaxel") + 
+  geom_line(linewidth=1) +
+  ylab("PFS")
+plot(g)
+```
+
+Median survival for each treatment within selected model:
+
+```{r, eval=FALSE}
+# Note that interval has to be wide enough to allow for ALL potential MCMC median survival estimates
+surv <- survquantile(modseq[[candmod$model[1]]], refstudy=refstudy,
+                 quantile=0.5, interval=c(0.1,100), treatments = plot.treats)
+tab <- print(surv)
+
+knitr::kable(tab, digits=2, 
+                  caption="Median survival for the fractional polynomial model reported above")
+```
+
+
+# Multivariate normal parameters from candidate (ST2)
+
+These will be saved to an excel file.
+
+```{r}
+library(officer)
+
+info.df <- data.frame("Title"=c("Fractional polynomial multivariate normal distribution of MCMC samples - means and covariances for key model parameters",
+                                      "Parameters named by the study name refer to the reference study ('baseline') effect for each fractional polynomial coefficient (1-3)",
+                                      "Parameters named by the treatment refer to the relative treatment effect for each fractional polynomial coefficient (1-3)"))
+
+# Choose save location
+wb <- openxlsx::createWorkbook(title="ST2_PFS_Analysis1")
+openxlsx::addWorksheet(wb=wb, sheetName="Info")
+openxlsx::writeDataTable(wb=wb, sheet="Info", 
+                         x=info.df)
+
+for (i in 1:nrow(candmod)) {
+  
+  mod <- modseq[[candmod$model[i]]]
+  
+  sheetnam <- paste("FP", mod$model$data()$P1, mod$model$data()$P2, sep="_")
+  openxlsx::addWorksheet(wb=wb, sheetName=sheetnam)
+  
+  mvn <- output_coda_fp(mod, format="mvn",
+                        refstudy=NULL,
+                        treatments=plot.treats)
+  
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$mean), rowNames = TRUE)
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$covar), startCol=4,
+                           rowNames = TRUE, colNames = TRUE)
+}
+
+openxlsx::saveWorkbook(wb=wb, file="MVN_ST2_PFS_Analysis1.xlsx", overwrite=TRUE)
+```
+
+
+## Model fit results for UME (ST2)
+
+No closed loops for this network
+
+### Dev-dev plots for UME vs NMA (ST2)
+
+No closed loops for this network

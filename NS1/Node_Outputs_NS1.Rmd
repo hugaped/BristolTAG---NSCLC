@@ -1,0 +1,363 @@
+---
+title: "NSCLC_Outputs"
+author: "Hugo Pedder"
+date: "2023-10-06"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  options(knitr.kable.NA = '\\-'),
+  fig.height=5, 
+  fig.width=7
+  )
+```
+```{r, eval=FALSE, include=FALSE}
+devtools::install_github("hugaped/BristolTAG")
+```
+```{r, include=FALSE}
+library(BristolTAG)
+library(survival)
+library(ggplot2)
+library(tidyverse)
+```
+
+This document can be used as a template to generate outputs for each node for the NSCLC report. It outputs the following into a Word document (so can easily be copied into the main report):
+
+* Log-log plots for each included study
+* Table of model fit statistics
+* Plots of KM and fitted survival curves for reference study for best fitting model(s)
+* Plots of time-varying (implied) HRs for best fitting model(s)
+* If evidence loops exist then also provides model fit results for the Unrelated Mean Effects model and dev-dev plots for the selected model
+* Predicted survival curves for selected model for use in economic model (including extrapolation)
+
+## Load model results
+
+```{r}
+modseq1 <- readRDS(file="JAGS_Results/NS1_PFS_fpoly1_EgyptExcl.RDS")
+modseq2 <- readRDS(file="JAGS_Results/NS1_PFS_fpoly2_EgyptExcl.RDS")
+modseq <- append(modseq1, modseq2)
+class(modseq) <- "sequence.fpoly"
+```
+
+
+## Load dataset
+
+```{r}
+ipd <- attributes(modseq[[1]])$ipd
+
+anova <- anova_data(timepoints=seq(0,72, by=1),
+                    df=ipd)
+```
+
+## Log-log plots
+
+```{r, fig.cap="Log-log plots for PFS for studies included in node NS1. Separation of the two lines indicates violation of the proportional hazards assumption"}
+ipd <- attr(modseq1[[1]], "ipd")
+
+loglog_plot(ipd)
+```
+
+
+## Model fit statistics
+
+```{r}
+modfit <- summary(modseq)
+
+noconv <- subset(modfit, converged==FALSE)
+modfit <- subset(modfit, converged==TRUE)
+
+modfit <- rbind(summary(modseq1), summary(modseq2))
+
+# Drop models with errors
+modfit <- modfit[!is.na(modfit$converged),]
+
+modfit <- arrange(modfit, DIC)
+
+candmod <- modfit[1:3,]
+```
+
+```{r}
+# Only report FP powers
+knitr::kable(modfit[,c(-1,-7)], col.names=c("Power 1", "Power 2", "Residual deviance", "pV", "DIC"),
+                  digits=1, 
+                  caption=paste0("Model fit statistics for successfully converged fractional polynomial models run on PFS for node NS1. Power 1 and Power 2 represent fractional polynomial powers. 1st order fractional polynomials only have a single power parameter (Power 1). Total number of data points = ", nrow(anova$aggregate)))
+```
+
+Based on this, candidate models are the following:
+
+```{r}
+knitr::kable(candmod[,c(-1,-7)], col.names=c("Power 1", "Power 2", "Residual deviance", "pV", "DIC"),
+                  digits=1, 
+                  caption=paste0("Model fit statistics for candidate fractional polynomial models run on PFS for node NS1. Power 1 and Power 2 represent fractional polynomial powers. 1st order fractional polynomials only have a single power parameter (Power 1). Total number of data points = ", nrow(anova$aggregate)))
+```
+
+
+## Plots of time-varying HRs
+
+These are shown only for the 5 candidate models, but additional ones could be specified here.
+
+```{r}
+hazardrats <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  hr <- hrcalc(modseq[[candmod$model[mod]]], times=seq(1, 60, length.out = 100), eform=TRUE)
+  hr <- hr$summary %>% mutate(model=candmod$model[mod])
+  hazardrats <- rbind(hazardrats, hr)
+}
+```
+
+
+Plot panels of time-varying HRs for candidate models:
+
+```{r}
+reftrt <- "PCT"
+
+out.df <- hazardrats
+
+trtnames <- attr(modseq[[1]], "trtnames")
+
+out.df$trt1 <- factor(out.df$trt1, labels=trtnames, levels=trtnames)
+
+cols <- RColorBrewer::brewer.pal(dplyr::n_distinct(out.df$trt1), "Set1")
+
+out.df <- subset(out.df, trt2==reftrt)
+cols <- cols[unique(as.numeric(out.df$trt1))]
+
+out.df$model <- factor(out.df$model)
+
+g <- ggplot2::ggplot(out.df, ggplot2::aes(x=time, 
+                                          #ymin=`97.5%`, ymax=`2.5%`, # Commenting out makes y-axis scales better
+                                          y=`50%`,
+                        color=trt1, fill=trt1, linetype=trt1)) +
+  ggplot2::geom_line() +
+  #ggplot2::geom_ribbon(alpha=0.3) +
+  ggplot2::facet_wrap(~model) +
+  ggplot2::xlab("Time") +
+  ggplot2::ylab("HR") +
+  ggplot2::theme_bw() +
+  ggplot2::ggtitle(paste0("Time-varying relative effects vs treatment ", unique(out.df$trt2))) +
+  ggplot2::scale_fill_manual(name = "Treatment", values=cols) +
+  ggplot2::scale_color_manual(name = "Treatment", values=cols) +
+  ggplot2::scale_linetype_discrete(name = "Treatment")
+
+plot(g)
+```
+
+
+Time-varying HRs for a single model with lowest DIC (if needed):
+
+```{r, fig.cap="Time-varying (implied) hazard ratios for all treatments versus ABCP, estimated from selected 2nd order fractional polynomial of PFS for NS1. Shaded regions represent 95%CrIs"}
+hazardrats <- hrcalc(modseq[[candmod$model[1]]], times=seq(1, 60, length.out = 100), eform=TRUE)
+g <- plot(hazardrats, reftrt="PCT")
+g + geom_line(linewidth=0.8)
+```
+
+
+## Plots of survival predictions for different models
+
+```{r}
+surv <- data.frame()
+for (mod in seq_along(candmod$model)) {
+  smod <- survcalc(modseq[[candmod$model[mod]]], refstudy="KEYNOTE189", 
+                times=seq(1, 60, length.out = 100))
+  smod <- smod$S %>% mutate(model=candmod$model[mod])
+  surv <- rbind(surv, smod)
+}
+```
+
+```{r}
+out.df <- surv
+
+trtnames <- attr(modseq[[1]], "trtnames")
+out.df$treatment <- factor(out.df$treatment, labels=trtnames, levels=trtnames)
+
+# Define colours
+cols <- RColorBrewer::brewer.pal(dplyr::n_distinct(trtnames), "Set1")
+
+# Subset by treatments
+# out.df <- subset(out.df, treatment %in% treats)
+cols <- cols[unique(as.numeric(out.df$treatment))]
+
+out.df$model <- factor(out.df$model)
+
+# capt <- paste0("Fractional polynomial; P1 = ", surv$P1, ifelse(!is.null(surv$P2), paste0(", P2 = ", surv$P2), ""))
+# capt <- paste(capt, paste("Reference study:", attr(surv, "refstudy")), sep="\n")
+capt <-paste("Reference study:", attr(modseq[[1]], "refstudy"))
+
+g <- ggplot2::ggplot(out.df, ggplot2::aes(x=time, ymin=`97.5%`, ymax=`2.5%`, y=`50%`,
+                        color=treatment, fill=treatment, linetype=treatment)) +
+  ggplot2::geom_line() +
+  ggplot2::facet_wrap(~model) +
+  ggplot2::xlab("Time") + ggplot2::ylab("PFS") +
+  ggplot2::theme_bw() +
+  ggplot2::scale_fill_manual(name = "Treatment", values=cols) +
+  ggplot2::scale_color_manual(name = "Treatment", values=cols) +
+  ggplot2::scale_linetype_discrete(name = "Treatment") +
+  ggplot2::labs(caption=capt)
+
+plot(g)
+```
+
+
+## Plot of survival predictions and KM data for each study, and for reference study
+
+Plot with KM for model with lowest DIC:
+
+
+```{r, results="hide", fig.cap="Predicted survival curves for IMpower150, estimated from 2nd order fractional polynomial of PFS for NS1. Survival predictions are plotted as coloured lines with shaded 95%CrIs. Kaplan-Meier data from the study are plotted as black solid lines."}
+g <- studykm_survplot(modseq[[candmod$model[1]]]) +
+  geom_km(anova$ipd) +
+  ylab("PFS")
+plot(g)
+```
+
+
+```{r, results="hide", fig.cap="Predicted survival curves for IMpower150, estimated from 2nd order fractional polynomial of PFS for NS1. Survival predictions are plotted as coloured lines with shaded 95%CrIs. Kaplan-Meier data from the study are plotted as black solid lines."}
+surv <- survcalc(modseq[[candmod$model[1]]], times=seq(1, max(ipd$time[ipd$study=="KEYNOTE189"]), length.out = 100),
+                 refstudy="KEYNOTE189")
+g <- plot(surv, quantity = "S", treats = c("PPCT", "PCT"), overlay.km = TRUE) +
+  ylab("PFS")
+plot(g)
+```
+
+
+
+## Model fit results for UME
+
+No closed loops for this network
+
+## Dev-dev plots for UME vs NMA
+
+No closed loops for this network
+
+
+## Predicted survival curves for selected model with extrapolation
+
+I'll just choose one here.
+
+```{r, results="hide", fig.cap="Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial of PFS for all treatments at NS1."}
+surv <- survcalc(modseq[[candmod$model[1]]], times=seq(1, 52*3, length.out = 100),
+                 refstudy="KEYNOTE189")
+g <- plot(surv, quantity = "S", plotinterval = FALSE,
+          treats=c("PPCT", "PCT", "ABCP")) + geom_line(linewidth=1) +
+  ylab("PFS")
+plot(g)
+```
+
+Median survival for each treatment within selected model:
+
+```{r}
+# Note that interval has to be wide enough to allow for ALL potential MCMC median survival estimates
+surv <- survquantile(modseq[[candmod$model[1]]], refstudy="KEYNOTE189",
+                 quantile=0.5, interval=c(0.1,100))
+tab <- print(surv)
+
+knitr::kable(tab, digits=2, 
+                  caption="Median survival for the fractional polynomial model reported above")
+```
+
+
+
+
+## Parameter estimates from selected model
+
+```{r}
+finalmod <- modseq[[candmod$model[1]]]
+
+# # Mu
+params <- rownames(finalmod$BUGSoutput$summary)[grepl("^mu\\[", rownames(finalmod$BUGSoutput$summary))]
+
+# D
+params <- c(params, rownames(finalmod$BUGSoutput$summary)[grepl("^d\\[", rownames(finalmod$BUGSoutput$summary))])
+
+
+# Create parameter names
+paramnams <- params
+for (i in seq_along(attr(finalmod, "studynames"))) {
+  paramnams <- gsub(paste0("^mu\\[", i, "\\,"), paste0("mu[", attr(finalmod, "studynames")[i], ","),
+                  paramnams)
+}
+for (k in seq_along(attr(finalmod, "trtnames"))) {
+  paramnams <- gsub(paste0("^d\\[", k, "\\,"), paste0("d[", attr(finalmod, "trtnames")[k], ","),
+                  paramnams)
+}
+
+param.df <- finalmod$BUGSoutput$summary[params, c("mean", "sd", "2.5%", "50%", "97.5%")]
+rownames(param.df) <- paramnams
+
+# Kable it up
+knitr::kable(param.df, col.names=c("Mean", "SD", "2.5%", "Median", "97.5%"),
+                  digits=2, 
+                  caption="Parameter estimates for selected 2nd order fractional polynomial. mu represent the study-specific baselines and d the treatment effect versus PPCT, for each fractional polynomial coefficient. Posterior quantiles (median, 2.5% and 95.5%) are shown.")
+```
+
+
+## Outputting results for use in economic model
+
+### Tests for multivariate normality (on a sample of MCMC iterations)
+
+```{r, echo=TRUE}
+library(MVN)
+
+set.seed(890421)
+samp <- sample(1:nrow(finalmod$BUGSoutput$sims.matrix), 2000)
+
+cols <- c(paste0("d[", 2:4, ",", 1, "]"), 
+          paste0("d[", 2:4, ",", 2, "]"), 
+          paste0("d[", 2:4, ",", 3, "]"),
+          paste0("mu[", 1:4, ",", 1, "]"),
+          paste0("mu[", 1:4, ",", 2, "]"),
+          paste0("mu[", 1:4, ",", 3, "]"))
+temp <- finalmod$BUGSoutput$sims.matrix[samp, cols]
+
+result <- mvn(temp, mvnTest="hz", 
+              multivariatePlot = "qq")
+
+result$multivariateNormality
+
+result$univariateNormality
+
+```
+
+It looks as though we can assume multivariate normal in this case, so we can provide the CfG team with parameters for a multivariate normal distribution that they can sample from.
+
+
+### Multivariate normal parameters for treatment effects from selected model
+
+These will be saved to an excel file.
+
+```{r}
+library(officer)
+
+info.df <- data.frame("Title"=c("Fractional polynomial multivariate normal distribution of MCMC samples - means and covariances for key model parameters from 2nd order FP models",
+                                      # "Parameters named by the study name refer to the reference study ('baseline') effect for each fractional polynomial coefficient (1-3)",
+                                      paste0("Parameters named by the treatment refer to the relative treatment effect for each fractional polynomial coefficient (1-3) versus the network reference (", attributes(modseq[[1]])$trtnames[1], ")")))
+
+# Choose save location
+wb <- openxlsx::createWorkbook(title="NS1_EgyptExcl")
+openxlsx::addWorksheet(wb=wb, sheetName="Info")
+openxlsx::writeDataTable(wb=wb, sheet="Info", 
+                         x=info.df)
+
+for (i in 1:nrow(candmod)) {
+  
+  mod <- modseq[[candmod$model[i]]]
+  
+  sheetnam <- paste("FP", mod$model$data()$P1, mod$model$data()$P2, sep="_")
+  openxlsx::addWorksheet(wb=wb, sheetName=sheetnam)
+  
+  # mvn <- output_coda_fp(mod, format="mvn",
+  #                       refstudy="KEYNOTE189",
+  #                       treatments=c("PPCT", "PCT", "ABCP"))
+    mvn <- output_coda_fp(mod, format="mvn",
+                        refstudy=NULL,
+                        treatments=c("PPCT", "PCT", "ABCP"))
+  
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$mean), rowNames = TRUE)
+  openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$covar), startCol=4,
+                           rowNames = TRUE, colNames = TRUE)
+}
+
+openxlsx::saveWorkbook(wb=wb, file="MVN_NS1_EgyptExcl.xlsx", overwrite=TRUE)
+```

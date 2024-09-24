@@ -1,0 +1,284 @@
+---
+title: "NSCLC - Reference curves for NS2"
+author: "Hugo Pedder"
+date: "2023-12-01"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  options(knitr.kable.NA = '\\-'),
+  fig.height=5, 
+  fig.width=7
+  )
+
+library(flexsurv)
+library(survminer)
+library(mfp)
+library(rstpm2)
+library(ggplot2)
+library(tidyverse)
+library(BristolTAG)
+source("R Functions/NSCLC_functions.R")
+
+# Choose save location
+wb <- openxlsx::createWorkbook(title="NS2_ReferenceCurves")
+
+info.df <- data.frame("Title"=c("Fractional polynomial multivariate normal distribution of MCMC samples - means and covariances for reference model parameters",
+                                      "Parameters named by the treatment refer to the relative treatment effect for each fractional polynomial coefficient (1-3)"
+                                ))
+
+openxlsx::addWorksheet(wb=wb, sheetName="Info")
+openxlsx::writeDataTable(wb=wb, sheet="Info", 
+                         x=info.df)
+```
+
+This uses the Pembrolizumab (PPCT) arm of KEYNOTE-189
+
+```{r}
+# Import data
+
+ipd <- read.csv("NS2 S2 PFS IPD extraction.csv")
+
+ipd.ref <- subset(ipd, study=="KEYNOTE189" & treatment=="PPCT")
+
+
+#### Run models ####
+#Exponenetial
+mod.exp <- flexsurvreg(Surv(time, event)~1, data=ipd.ref, dist='exponential')
+modfit <- data.frame(Model="Exponential", AIC=glance(mod.exp)$AIC, BIC=glance(mod.exp)$BIC)
+
+# Weibull
+mod.weib <- flexsurvreg(Surv(time, event)~1, data=ipd.ref, dist='WeibullPH')
+modfit <- modfit %>%
+  add_row(Model="Weibull", AIC=glance(mod.weib)$AIC, BIC=glance(mod.weib)$BIC)
+
+# Gamma
+mod.gengamma <- flexsurvreg(Surv(time, event)~1, data=ipd.ref, dist='gengamma')
+modfit <- modfit %>%
+  add_row(Model="Generalised Gamma", AIC=glance(mod.gengamma)$AIC, BIC=glance(mod.gengamma)$BIC)
+
+# Log-normal
+mod.lnorm <- flexsurvreg(Surv(time, event)~1, data=ipd.ref, dist='lnorm')
+modfit <- modfit %>%
+  add_row(Model="Log-Normal", AIC=glance(mod.lnorm)$AIC, BIC=glance(mod.lnorm)$BIC)
+
+# Log logistic
+mod.loglogistic <- flexsurvreg(Surv(time, event)~1, data=ipd.ref, dist='llogis')
+modfit <- modfit %>%
+  add_row(Model="Log Logistic", AIC=glance(mod.loglogistic)$AIC, BIC=glance(mod.loglogistic)$BIC)
+
+# Gompertz
+mod.gom <- flexsurvreg(Surv(time, event)~1, data=ipd.ref, dist='gompertz')
+modfit <- modfit %>%
+  add_row(Model="Gompertz", AIC=glance(mod.gom)$AIC, BIC=glance(mod.gom)$BIC)
+
+# RCS (2 knots)
+mod.rcs <- stpm2(Surv(time, event)~1, data=ipd.ref, df=2)
+modfit <- modfit %>%
+  add_row(Model="RCS", AIC=AIC(mod.rcs), BIC=BIC(mod.rcs))
+
+# Fractional polynomial (2nd order -0.5, -0.5)
+modseq1 <- readRDS(file="JAGS_Results/NS2_S2_PFS_fpoly1_Analysis1.RDS")
+modseq2 <- readRDS(file="JAGS_Results/NS2_S2_PFS_fpoly2_Analysis1.RDS")
+modseq.fp <- append(modseq1, modseq2)
+class(modseq.fp) <- "sequence.fpoly"
+
+# Select histology (only needed if models allowing for histology effect are used)
+# for (i in seq_along(modseq.fp)) {
+#   if (class(modseq.fp[[i]])=="rjags") {
+#     modseq.fp[[i]] <- select_histology(modseq.fp[[i]], hist="NS", analysis=5.2)
+#   }
+# }
+
+modfit.fp <- summary(modseq.fp)
+
+fp.mod <- modseq.fp[["FP_0_-0.5"]]
+
+refstudy <- "KEYNOTE189"
+
+# For FP -1 0
+surv.fp <- survcalc(fp.mod, 
+                    times=seq(1, max(ipd$time[ipd$study==refstudy]), length.out = 100),
+                    refstudy=refstudy)
+
+modfit <- modfit %>%
+  add_row(Model="2nd order fractional polynomial", AIC=NA, BIC=NA)
+```
+
+## All models plotted simultaneously
+
+```{r}
+# Standard distributions
+modlist <- list("Exponential"=mod.exp, "Weibull"=mod.weib, 
+                "Generalised Gamma"=mod.gengamma, "Log-normal"=mod.lnorm,
+                "Log Logistic"=mod.loglogistic, "Gompertz"=mod.gom)
+
+surv.df <- data.frame()
+for (i in seq_along(modlist)) {
+  mod.df <- summary(modlist[[i]], tidy=TRUE)
+  surv.df <- rbind(surv.df,
+                   mod.df %>% rename(surv=est, upper=ucl, lower=lcl) %>%
+                     select(time, surv, upper, lower) %>%
+                     mutate(Model=names(modlist)[i]))
+}
+
+# Add RCS
+pred_surv <- predict(mod.rcs, 
+                     type="surv", grid=TRUE, full=TRUE, se.fit=TRUE)
+surv.df <- rbind(surv.df,
+                 pred_surv %>% rename(surv=Estimate) %>%
+                   select(time, surv, upper, lower) %>%
+                   mutate(Model="RCS")
+                   )
+
+# Add fractional polynomial
+surv.df <- rbind(surv.df,
+                 subset(surv.fp$S, treatment=="PPCT") %>% 
+                   rename(surv=`50%`, lower=`2.5%`, upper=`97.5%`) %>%
+                   select(time, surv, upper, lower) %>%
+                   mutate(Model="Frac Poly 2nd order")
+                   )
+
+surv.df$Model <- factor(surv.df$Model)
+
+# Plot all results with KM data
+kmdat <- survfit(Surv(time, event) ~ 1, data=ipd.ref,type="kaplan-meier",)
+kmdat <- data.frame(time=kmdat$time,surv=kmdat$surv, Model="Kaplan-Meier")
+
+cols <- RColorBrewer::brewer.pal(n_distinct(surv.df$Model)+1, "Set1")
+
+ggplot(surv.df, aes(x=time, y=surv, color=Model)) +
+  geom_line() +
+  geom_step(data=kmdat, aes(time, surv), color="black") +
+  xlab("Time (months)") +
+  ylab("PFS") +
+  scale_color_manual(values=cols) +
+  theme_bw()
+```
+
+## Model fit and summary
+
+```{r}
+modfit <- modfit %>% mutate(visual=case_when(Model %in% c("Log Logistic", "Gompertz") ~ TRUE, TRUE ~ FALSE))
+
+knitr::kable(modfit, col.names=c("Distribution", "AIC", "BIC", "Best Visual Fit"),
+                  digits=1)
+```
+
+
+## Exponential
+
+```{r}
+print(glance(mod.exp))
+print(ggsurvplot(mod.exp,title=paste(ipd.ref$study[1], ipd.ref$treatment[1], "Exponential fit")),
+      palette = "blue",
+      linetype = 6,
+      size = 0.1)
+```
+
+## Weibull
+
+```{r}
+print(glance(mod.weib))
+print(ggsurvplot(mod.weib,title=paste(ipd.ref$study[1], ipd.ref$treatment[1], "Weibull fit")),
+      palette = "blue",
+      linetype = 6,
+      size = 0.1)
+```
+
+## Generalised Gamma
+
+```{r}
+print(glance(mod.gengamma))
+print(ggsurvplot(mod.gengamma,title=paste(ipd.ref$study[1], ipd.ref$treatment[1], "Gamma fit")),
+      palette = "blue",
+      linetype = 6,
+      size = 0.1)
+```
+
+## Log-Normal
+
+```{r}
+print(glance(mod.lnorm))
+print(ggsurvplot(mod.lnorm,title=paste(ipd.ref$study[1], ipd.ref$treatment[1], "Log-normal fit")),
+      palette = "blue",
+      linetype = 6,
+      size = 0.1)
+```
+
+## Log Logistic
+
+```{r}
+print(glance(mod.loglogistic))
+print(ggsurvplot(mod.loglogistic,title=paste(ipd.ref$study[1], ipd.ref$treatment[1], "Log-logistic fit")),
+      palette = "blue",
+      linetype = 6,
+      size = 0.1)
+```
+
+## Gompertz
+
+```{r}
+print(glance(mod.gom))
+print(ggsurvplot(mod.gom,title=paste(ipd.ref$study[1], ipd.ref$treatment[1], "Gompertz fit")),
+      palette = "blue",
+      linetype = 6,
+      size = 0.1)
+```
+
+
+## Restricted cubic splines
+
+```{r}
+print(mod.rcs)
+
+pred_surv <- predict(mod.rcs, 
+                       type="surv", grid=TRUE, full=TRUE, se.fit=TRUE)
+g <- ggplot(pred_surv,
+       aes(x=time, y=Estimate, ymin=lower, ymax=upper))+
+  xlab("Time months")+
+  ylab("Hazard")+
+  geom_ribbon(alpha=0.2, fill="blue")+
+  geom_line()
+
+# Overlay KM
+t1 <- pred_surv$time
+e1 <- pred_surv$Estimate
+fpm_1 <- data.frame(t1,e1)
+
+kmdat <- survfit(Surv(time, event) ~ 1, data=ipd.ref,type="kaplan-meier",)
+kmdat <- data.frame(kmdat$time,kmdat$surv)
+
+ggplot(fpm_1, aes(t1, e1))+
+  geom_line()+
+  geom_step(data=kmdat, aes(kmdat.time, kmdat.surv)) +
+  xlab("Time(months)") +
+  ylab("PFS")
+```
+
+## Fractional polynomial
+
+```{r}
+g <- plot(surv.fp, quantity = "S", treats = c("PPCT"), overlay.km = TRUE) +
+  ylab("PFS")
+plot(g)
+```
+
+
+```{r}
+# Generate covariance matrices (fp.mod)
+mvn <- output_coda_ref(fp.mod.1 = fp.mod, refstudy=refstudy)
+
+sheetnam <- paste("FP", fp.mod$model$data()$P1, fp.mod$model$data()$P2, "NS", sep="_")
+openxlsx::addWorksheet(wb=wb, sheetName=sheetnam)
+
+openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$mean), rowNames = TRUE)
+openxlsx::writeDataTable(wb=wb, sheet=sheetnam, data.frame(mvn$covar), startCol=4,
+                         rowNames = TRUE, colNames = TRUE)
+```
+
+```{r}
+openxlsx::saveWorkbook(wb=wb, file="MVN_NS2_ReferenceCurves.xlsx", overwrite=TRUE)
+```

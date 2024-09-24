@@ -1,0 +1,736 @@
+---
+title: "NSCLC Survival Predictions - ST1 (PDL1 >50%, PDL1 1-49% & PDL1 <1%)"
+author: f("Hugo Pedder", "Ayman Sadek", "Nicky J Welton")
+date: "2024-01-05"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  options(knitr.kable.NA = '\\-'),
+  fig.height=5, 
+  fig.width=7
+  )
+```
+```{r, eval=FALSE, include=FALSE}
+devtools::install_github("hugaped/BristolTAG")
+```
+```{r, include=FALSE}
+library(BristolTAG)
+library(survival)
+library(ggplot2)
+library(tidyverse)
+source("NSCLC_functions.R")
+
+all.cols <- RColorBrewer::brewer.pal(9, "Set1")
+all.cols <- c(all.cols, RColorBrewer::brewer.pal(4, "Set2"))
+```
+
+
+## Load model results
+
+```{r}
+# modseq1 <- readRDS(file="JAGS_Results/ST1_AllPDL_PFS_fpoly1.RDS")
+# modseq2 <- readRDS(file="JAGS_Results/ST1_AllPDL_PFS_fpoly2.RDS")
+# modseq <- append(modseq1, modseq2)
+# class(modseq) <- "sequence.fpoly"
+
+# Only need to load 2nd order models for this
+modseq <- readRDS(file="JAGS_Results/ST1_AllPDL_PFS_fpoly2.RDS")
+
+# Remove ZZ from study name
+for (mod in seq_along(modseq)) {
+  attributes(modseq[[mod]])$study <- 
+    gsub("(ZZ)(.+)(_>1%)", "\\2", attributes(modseq[[mod]])$study)
+  
+  attributes(modseq[[mod]])$studynames <- 
+    gsub("(ZZ)(.+)(_>1%)", "\\2", attributes(modseq[[mod]])$studynames)
+
+  attributes(modseq[[mod]])$ipd$study <- 
+    gsub("(ZZ)(.+)(_>1%)", "\\2", attributes(modseq[[mod]])$ipd$study)
+  
+  # Set mu[,2,] to be equal to mu[,1,] for mixed PDL studies (>1%)
+  # This ensures survival predictions will work properly, but note that if using survcalc() with a named refstudy it will therefore always use PDL1 >50% baseline
+  modseq[[mod]]$BUGSoutput$sims.list$mu[,,2,] <- modseq[[mod]]$BUGSoutput$sims.list$mu[,,1,]
+}
+```
+
+```{r}
+# Select the correct treatment parameters
+modseq.50 <- modseq
+modseq.1 <- modseq
+modseq.0 <- modseq
+for (mod in seq_along(modseq)) {
+  if (class(modseq[[mod]]) %in% "rjags") {
+    modseq.50[[mod]] <- select_pdl1(modseq.50[[mod]], pdl1=">50%")
+    modseq.1[[mod]] <- select_pdl1(modseq.1[[mod]], pdl1="1-49%")
+    modseq.0[[mod]] <- select_pdl1(modseq.0[[mod]], pdl1="<1%")
+  }
+}
+```
+
+```{r}
+# 2nd order FP reference models
+refseq.ns <- readRDS(file="JAGS_Results/ST1_PFS_fpoly2_CM057.RDS")
+refseq.s <- readRDS(file="JAGS_Results/ST1_PFS_fpoly2_CM017.RDS")
+refseq.ret <- readRDS(file="JAGS_Results/ST1_PFS_fpoly2_LIBRETTO-001.RDS")
+```
+
+## Load dataset
+
+```{r}
+ipd <- attributes(modseq[[1]])$ipd
+
+anova <- anova_data_st1(timepoints=seq(0,72, by=1),
+                    df=ipd)
+```
+
+```{r}
+hrmod <- readRDS(file="JAGS_Results/ST1_PFS_HR_Non-squamous_Genetic.RDS")
+
+d <- hrmod$BUGSoutput$sims.list$d
+```
+
+```{r}
+ipd <- attr(modseq[[1]], "ipd")
+ipd$study <- gsub("ZZ", "", ipd$study)
+```
+
+```{r}
+all.treats <- attributes(modseq[[1]])$trtnames
+ns.treats <- c("Docetaxel", "Pemetrexed", "Pemetrexed + Carboplatin", "Selpercatinib")
+all.treats <- c(all.treats, ns.treats[2:length(ns.treats)])
+```
+
+## Model fit statistics
+
+```{r}
+modfit <- sumst1.sequence.fpoly(modseq, pdl.dev=TRUE)
+
+noconv <- subset(modfit, is.na(converged))
+modfit <- subset(modfit, converged==TRUE)
+
+#modfit <- summary(modseq)
+#modfit <- rbind(summary(modseq1), summary(modseq2))
+
+# Drop models with errors
+#modfit <- modfit[!is.na(modfit$converged),]
+
+modfit <- arrange(modfit, DIC)
+
+candmod <- modfit[c(1, 3, 5, 7),]
+```
+
+
+# Survival predictions for ST1, Non-squamous, PDL1 >50%, No genetic subtype
+
+Selected reference for ST1 non-squamous population is the overall (not PDL1-subgrouped) Docetaxel arm of **CHECKMATE-057**.
+
+```{r}
+# plot.treats <- all.treats[!all.treats %in% c("Selpercatinib",
+#                                              "Sotorasib")]
+plot.treats <- c("Atezolizumab", "Pembrolizumab", "Nivolumab", "Docetaxel", 
+                 "Docetaxel-Nintedanib", "Pemetrexed + Carboplatin")
+
+modseq.i <- modseq.50
+finalmod <- candmod$model[1]
+refmod <- refseq.ns[[finalmod]]
+refstudy <- "CHECKMATE057"
+pdl1 <- ">50%"
+mutation <- "no genetic"
+hist <- "non-squamous"
+times <- seq(1, 52*3, length.out = 100)
+```
+
+```{r, results="hide", fig.cap=paste("Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial) of PFS for all treatments at ST1 for PDL1", pdl1,",", hist, "patients,", mutation, "mutation.")}
+g <- plot_st1_survival(modseq.i=modseq.i[[finalmod]], 
+                  times=times, 
+                  refstudy=refstudy, 
+                  refmod=refmod,
+                  d=d,
+                  plot.treats=plot.treats) + 
+  xlab("Time (months)")
+
+plot(g)
+```
+
+```{r, eval=FALSE}
+# Note that interval has to be wide enough to allow for ALL potential MCMC median survival estimates
+surv <- survquantile(modseq.i[[finalmod]], 
+                     refstudy=refstudy,
+                     refmod = refmod,
+                     treatments = plot.treats,
+                     quantile=0.5, interval=c(0.1,100))
+tab <- print(surv)
+
+knitr::kable(tab, digits=2, 
+                  caption="Median survival for the fractional polynomial model reported above")
+```
+
+
+# Survival predictions for ST1, Non-squamous, PDL1 1-49%, No genetic subtype
+
+Selected reference for ST1 non-squamous population is the overall (not PDL1-subgrouped) Docetaxel arm of **CHECKMATE-057**.
+
+```{r}
+# plot.treats <- all.treats[!all.treats %in% c("Selpercatinib",
+#                                              "Sotorasib")]
+plot.treats <- c("Atezolizumab", "Pembrolizumab", "Nivolumab", "Docetaxel", 
+                 "Docetaxel-Nintedanib", "Pemetrexed + Carboplatin")
+
+modseq.i <- modseq.1
+finalmod <- candmod$model[1]
+refmod <- refseq.ns[[finalmod]]
+refstudy <- "CHECKMATE057"
+pdl1 <- "1-49%"
+mutation <- "no genetic"
+hist <- "non-squamous"
+times <- seq(1, 52*3, length.out = 100)
+```
+
+```{r, results="hide", fig.cap=paste("Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial) of PFS for all treatments at ST1 for PDL1", pdl1,",", hist, "patients,", mutation, "mutation.")}
+g <- plot_st1_survival(modseq.i=modseq.i[[finalmod]], 
+                  times=times, 
+                  refstudy=refstudy, 
+                  refmod=refmod,
+                  d=d,
+                  plot.treats=plot.treats) + 
+  xlab("Time (months)")
+
+plot(g)
+```
+
+```{r, eval=FALSE}
+# Note that interval has to be wide enough to allow for ALL potential MCMC median survival estimates
+surv <- survquantile(modseq.i[[finalmod]], 
+                     refstudy=refstudy,
+                     refmod = refmod,
+                     treatments = plot.treats,
+                     quantile=0.5, interval=c(0.1,100))
+tab <- print(surv)
+
+knitr::kable(tab, digits=2, 
+                  caption="Median survival for the fractional polynomial model reported above")
+```
+
+
+# Survival predictions for ST1, Non-squamous, PDL1 <1%, No genetic subtype
+
+Selected reference for ST1 non-squamous population is the overall (not PDL1-subgrouped) Docetaxel arm of **CHECKMATE-057**.
+
+```{r}
+# plot.treats <- all.treats[!all.treats %in% c("Selpercatinib",
+#                                              "Sotorasib",
+#                                              "Pembrolizumab",
+#                                              "Nivolumab")]
+plot.treats <- c("Atezolizumab", "Docetaxel", 
+                 "Docetaxel-Nintedanib", "Pemetrexed + Carboplatin")
+
+modseq.i <- modseq.0
+finalmod <- candmod$model[1]
+refmod <- refseq.ns[[finalmod]]
+refstudy <- "CHECKMATE057"
+pdl1 <- "<1%"
+mutation <- "no genetic"
+hist <- "non-squamous"
+times <- seq(1, 52*3, length.out = 100)
+```
+
+```{r, results="hide", fig.cap=paste("Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial) of PFS for all treatments at ST1 for PDL1", pdl1,",", hist, "patients,", mutation, "mutation.")}
+g <- plot_st1_survival(modseq.i=modseq.i[[finalmod]], 
+                  times=times, 
+                  refstudy=refstudy, 
+                  refmod=refmod,
+                  d=d,
+                  plot.treats=plot.treats) + 
+  xlab("Time (months)")
+
+plot(g)
+```
+
+```{r, eval=FALSE}
+# Note that interval has to be wide enough to allow for ALL potential MCMC median survival estimates
+surv <- survquantile(modseq.i[[finalmod]], 
+                     refstudy=refstudy,
+                     refmod = refmod,
+                     treatments = plot.treats,
+                     quantile=0.5, interval=c(0.1,100))
+tab <- print(surv)
+
+knitr::kable(tab, digits=2, 
+                  caption="Median survival for the fractional polynomial model reported above")
+```
+
+
+
+# Survival predictions for ST1, Squamous, PDL1 >50%, No genetic subtype
+
+Selected reference for ST1 squamous population is the overall (not PDL1-subgrouped) Docetaxel arm of **CHECKMATE-017**.
+
+```{r}
+# plot.treats <- all.treats[!all.treats %in% c("Selpercatinib",
+#                                              "Sotorasib")]
+plot.treats <- c("Nivolumab", "Atezolizumab", "Pembrolizumab", "Docetaxel", "Pacltxl-Carb")
+
+modseq.i <- modseq.50
+finalmod <- candmod$model[1]
+refmod <- refseq.s[[finalmod]]
+refstudy <- "CHECKMATE017"
+pdl1 <- ">50%"
+mutation <- "no genetic"
+hist <- "squamous"
+times <- seq(1, 52*3, length.out = 100)
+```
+
+```{r, results="hide", fig.cap=paste("Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial) of PFS for all treatments at ST1 for PDL1", pdl1,",", hist, "patients,", mutation, "mutation.")}
+g <- plot_st1_survival(modseq.i=modseq.i[[finalmod]], 
+                  times=times, 
+                  refstudy=refstudy, 
+                  refmod=refmod,
+                  d=d,
+                  plot.treats=plot.treats) + 
+  xlab("Time (months)")
+
+plot(g)
+```
+
+```{r, eval=FALSE}
+# Note that interval has to be wide enough to allow for ALL potential MCMC median survival estimates
+surv <- survquantile(modseq.i[[finalmod]], 
+                     refstudy=refstudy,
+                     refmod = refmod,
+                     treatments = plot.treats,
+                     quantile=0.5, interval=c(0.1,100))
+tab <- print(surv)
+
+knitr::kable(tab, digits=2, 
+                  caption="Median survival for the fractional polynomial model reported above")
+```
+
+
+# Survival predictions for ST1, Squamous, PDL1 1-49%, No genetic subtype
+
+Selected reference for ST1 squamous population is the overall (not PDL1-subgrouped) Docetaxel arm of **CHECKMATE-017**.
+
+```{r}
+# plot.treats <- all.treats[!all.treats %in% c("Selpercatinib",
+#                                              "Sotorasib")]
+plot.treats <- c("Nivolumab", "Atezolizumab", "Pembrolizumab", "Docetaxel", "Pacltxl-Carb")
+
+modseq.i <- modseq.1
+finalmod <- candmod$model[1]
+refmod <- refseq.s[[finalmod]]
+refstudy <- "CHECKMATE017"
+pdl1 <- "1-49%"
+mutation <- "no genetic"
+hist <- "squamous"
+times <- seq(1, 52*3, length.out = 100)
+```
+
+```{r, results="hide", fig.cap=paste("Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial) of PFS for all treatments at ST1 for PDL1", pdl1,",", hist, "patients,", mutation, "mutation.")}
+g <- plot_st1_survival(modseq.i=modseq.i[[finalmod]], 
+                  times=times, 
+                  refstudy=refstudy, 
+                  refmod=refmod,
+                  d=d,
+                  plot.treats=plot.treats) + 
+  xlab("Time (months)")
+
+plot(g)
+```
+
+```{r, eval=FALSE}
+# Note that interval has to be wide enough to allow for ALL potential MCMC median survival estimates
+surv <- survquantile(modseq.i[[finalmod]], 
+                     refstudy=refstudy,
+                     refmod = refmod,
+                     treatments = plot.treats,
+                     quantile=0.5, interval=c(0.1,100))
+tab <- print(surv)
+
+knitr::kable(tab, digits=2, 
+                  caption="Median survival for the fractional polynomial model reported above")
+```
+
+
+# Survival predictions for ST1, Squamous, PDL1 <1%, No genetic subtype
+
+Selected reference for ST1 squamous population is the overall (not PDL1-subgrouped) Docetaxel arm of **CHECKMATE-017**.
+
+```{r}
+# plot.treats <- all.treats[!all.treats %in% c("Selpercatinib",
+#                                              "Sotorasib",
+#                                              "Pembrolizumab")]
+plot.treats <- c("Nivolumab", "Atezolizumab", "Docetaxel", "Pacltxl-Carb")
+
+modseq.i <- modseq.0
+finalmod <- candmod$model[1]
+refmod <- refseq.s[[finalmod]]
+refstudy <- "CHECKMATE017"
+pdl1 <- "<1%"
+mutation <- "no genetic"
+times <- seq(1, 52*3, length.out = 100)
+hist <- "squamous"
+```
+
+```{r, results="hide", fig.cap=paste("Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial) of PFS for all treatments at ST1 for PDL1", pdl1,",", hist, "patients,", mutation, "mutation.")}
+g <- plot_st1_survival(modseq.i=modseq.i[[finalmod]], 
+                  times=times, 
+                  refstudy=refstudy, 
+                  refmod=refmod,
+                  d=d,
+                  plot.treats=plot.treats) + 
+  xlab("Time (months)")
+
+plot(g)
+```
+
+```{r, eval=FALSE}
+# Note that interval has to be wide enough to allow for ALL potential MCMC median survival estimates
+surv <- survquantile(modseq.i[[finalmod]], 
+                     refstudy=refstudy,
+                     refmod = refmod,
+                     treatments = plot.treats,
+                     quantile=0.5, interval=c(0.1,100))
+tab <- print(surv)
+
+knitr::kable(tab, digits=2, 
+                  caption="Median survival for the fractional polynomial model reported above")
+```
+
+
+
+# Survival predictions for ST1, Non-squamous, PDL1 >50%, KRAS
+
+Selected reference for ST1 KRAS (non-squamous) population is the Docetaxel arm of **CODEBREAK 200**.
+
+```{r}
+# plot.treats <- all.treats[!all.treats %in% c("Selpercatinib")]
+plot.treats <- c("Sotorasib", "Atezolizumab", "Pembrolizumab", "Nivolumab", 
+                 "Docetaxel", "Docetaxel-Nintedanib", "Pemetrexed + Carboplatin")
+
+modseq.i <- modseq.50
+finalmod <- candmod$model[1]
+refmod <- modseq.i[[finalmod]]
+refstudy <- "CODEBREAK200"
+pdl1 <- ">50%"
+mutation <- "KRAS"
+times <- seq(1, 52*3, length.out = 100)
+hist <- "non-squamous"
+```
+
+```{r, results="hide", fig.cap=paste("Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial) of PFS for all treatments at ST1 for PDL1", pdl1,",", hist, "patients,", mutation, "mutation.")}
+g <- plot_st1_survival(modseq.i=modseq.i[[finalmod]], 
+                  times=times, 
+                  refstudy=refstudy, 
+                  refmod=refmod,
+                  d=d,
+                  plot.treats=plot.treats) + 
+  xlab("Time (months)")
+
+plot(g)
+```
+
+```{r, eval=FALSE}
+# Note that interval has to be wide enough to allow for ALL potential MCMC median survival estimates
+surv <- survquantile(modseq.i[[finalmod]], 
+                     refstudy=refstudy,
+                     refmod = refmod,
+                     treatments = plot.treats,
+                     quantile=0.5, interval=c(0.1,100))
+tab <- print(surv)
+
+knitr::kable(tab, digits=2, 
+                  caption="Median survival for the fractional polynomial model reported above")
+```
+
+
+# Survival predictions for ST1, Non-squamous, PDL1 1-49%, KRAS
+
+Selected reference for ST1 KRAS (non-squamous) population is the Docetaxel arm of **CODEBREAK 200**.
+
+```{r}
+# plot.treats <- all.treats[!all.treats %in% c("Selpercatinib")]
+plot.treats <- c("Sotorasib", "Atezolizumab", "Pembrolizumab", "Nivolumab", 
+                 "Docetaxel", "Docetaxel-Nintedanib", "Pemetrexed + Carboplatin")
+
+modseq.i <- modseq.1
+finalmod <- candmod$model[1]
+refmod <- modseq.i[[finalmod]]
+refstudy <- "CODEBREAK200"
+pdl1 <- "1-49%"
+mutation <- "KRAS"
+times <- seq(1, 52*3, length.out = 100)
+hist <- "non-squamous"
+```
+
+```{r, results="hide", fig.cap=paste("Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial) of PFS for all treatments at ST1 for PDL1", pdl1,",", hist, "patients,", mutation, "mutation.")}
+g <- plot_st1_survival(modseq.i=modseq.i[[finalmod]], 
+                  times=times, 
+                  refstudy=refstudy, 
+                  refmod=refmod,
+                  d=d,
+                  plot.treats=plot.treats) + 
+  xlab("Time (months)")
+
+plot(g)
+```
+
+```{r, eval=FALSE}
+# Note that interval has to be wide enough to allow for ALL potential MCMC median survival estimates
+surv <- survquantile(modseq.i[[finalmod]], 
+                     refstudy=refstudy,
+                     refmod = refmod,
+                     treatments = plot.treats,
+                     quantile=0.5, interval=c(0.1,100))
+tab <- print(surv)
+
+knitr::kable(tab, digits=2, 
+                  caption="Median survival for the fractional polynomial model reported above")
+```
+
+
+# Survival predictions for ST1, Non-squamous, PDL1 <1%, KRAS
+
+Selected reference for ST1 KRAS (non-squamous) population is the Docetaxel arm of **CODEBREAK 200**.
+
+```{r}
+# plot.treats <- all.treats[!all.treats %in% c("Selpercatinib",
+#                                              "Pembrolizumab",
+#                                              "Nivolumab")]
+plot.treats <- c("Sotorasib", "Atezolizumab", "Docetaxel", 
+                 "Docetaxel-Nintedanib", "Pemetrexed + Carboplatin")
+
+modseq.i <- modseq.0
+finalmod <- candmod$model[1]
+refmod <- modseq.i[[finalmod]]
+refstudy <- "CODEBREAK200"
+pdl1 <- "<1%"
+mutation <- "KRAS"
+times <- seq(1, 52*3, length.out = 100)
+hist <- "non-squamous"
+```
+
+```{r, results="hide", fig.cap=paste("Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial) of PFS for all treatments at ST1 for PDL1", pdl1,",", hist, "patients,", mutation, "mutation.")}
+g <- plot_st1_survival(modseq.i=modseq.i[[finalmod]], 
+                  times=times, 
+                  refstudy=refstudy, 
+                  refmod=refmod,
+                  d=d,
+                  plot.treats=plot.treats) + 
+  xlab("Time (months)")
+
+plot(g)
+```
+
+```{r, eval=FALSE}
+# Note that interval has to be wide enough to allow for ALL potential MCMC median survival estimates
+surv <- survquantile(modseq.i[[finalmod]], 
+                     refstudy=refstudy,
+                     refmod = refmod,
+                     treatments = plot.treats,
+                     quantile=0.5, interval=c(0.1,100))
+tab <- print(surv)
+
+knitr::kable(tab, digits=2, 
+                  caption="Median survival for the fractional polynomial model reported above")
+```
+
+
+# Survival predictions for ST1, Non-squamous, PDL1 >50%, RET fusion +
+
+Selected reference for ST1 RET fusion + (non-squamous) population is Selpercatinib from **LIBRETTO-001**.
+
+```{r}
+# plot.treats <- all.treats[!all.treats %in% c("Sotorasib")]
+plot.treats <- c("Selpercatinib", "Atezolizumab", "Pembrolizumab", "Nivolumab",
+                 "Docetaxel", "Docetaxel-Nintedanib", "Pemetrexed + Carboplatin")
+
+modseq.i <- modseq.50
+finalmod <- candmod$model[1]
+refmod <- refseq.ret[[finalmod]]
+refstudy <- "LIBRETTO-001"
+pdl1 <- ">50%"
+mutation <- "RET fusion +ve"
+times <- seq(1, 52*3, length.out = 100)
+hist <- "non-squamous"
+```
+
+```{r, results="hide", fig.cap=paste("Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial) of PFS for all treatments at ST1 for PDL1", pdl1,",", hist, "patients,", mutation, "mutation.")}
+hrnames <- attributes(hrmod)$trtnames
+
+# Select d values for Docteaxel vs Selpercatinib
+adj.d <- d[,which(hrnames=="Selpercatinib"), drop=FALSE]
+
+# Adjust FP model to make it relative to Selpercatinib by applying constant HR
+adj.jagsmod <- fp_applyhr(d=adj.d, # Docetaxel vs Selpercatinib
+                          jagsmod=modseq.i[[finalmod]],
+                          refmod=refmod,
+                          reftrt="Selpercatinib"
+                          )
+
+adj.d <- apply(d[,-which(hrnames=="Selpercatinib"), drop=FALSE],
+               MARGIN=2, 
+               FUN=function(x) {x-adj.d})
+adj.d <- cbind(matrix(0, ncol=1, nrow=nrow(adj.d)), adj.d)
+
+
+g <- plot_st1_survival(modseq.i=adj.jagsmod, 
+                  times=seq(1, 52*3, length.out = 100), 
+                  refstudy=refstudy, 
+                  refmod=refmod,
+                  trtnames = hrnames[c(4,1:3)], # Treatment names of constant HR
+                  d=adj.d,
+                  plot.treats=plot.treats) + 
+  xlab("Time (months)")
+
+plot(g)
+```
+
+
+```{r, eval=FALSE}
+# Note that interval has to be wide enough to allow for ALL potential MCMC median survival estimates
+surv <- survquantile(modseq.i[[finalmod]], 
+                     refstudy=refstudy,
+                     refmod = refmod,
+                     treatments = plot.treats,
+                     quantile=0.5, interval=c(0.1,100))
+tab <- print(surv)
+
+knitr::kable(tab, digits=2, 
+                  caption="Median survival for the fractional polynomial model reported above")
+```
+
+
+
+# Survival predictions for ST1, Non-squamous, PDL1 1-49%, RET fusion +
+
+Selected reference for ST1 RET fusion + (non-squamous) population is Selpercatinib from **LIBRETTO-001**.
+
+```{r}
+# plot.treats <- all.treats[!all.treats %in% c("Sotorasib")]
+plot.treats <- c("Selpercatinib", "Atezolizumab", "Pembrolizumab", "Nivolumab",
+                 "Docetaxel", "Docetaxel-Nintedanib", "Pemetrexed + Carboplatin")
+
+modseq.i <- modseq.1
+finalmod <- candmod$model[1]
+refmod <- refseq.ret[[finalmod]]
+refstudy <- "LIBRETTO-001"
+pdl1 <- "1-49%%"
+mutation <- "RET fusion +ve"
+times <- seq(1, 52*3, length.out = 100)
+hist <- "non-squamous"
+```
+
+```{r, results="hide", fig.cap=paste("Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial) of PFS for all treatments at ST1 for PDL1", pdl1,",", hist, "patients,", mutation, "mutation.")}
+hrnames <- attributes(hrmod)$trtnames
+
+# Select d values for Docteaxel vs Selpercatinib
+adj.d <- d[,which(hrnames=="Selpercatinib"), drop=FALSE]
+
+# Adjust FP model to make it relative to Selpercatinib by applying constant HR
+adj.jagsmod <- fp_applyhr(d=adj.d, # Docetaxel vs Selpercatinib
+                          jagsmod=modseq.i[[finalmod]],
+                          refmod=refmod,
+                          reftrt="Selpercatinib"
+                          )
+
+adj.d <- apply(d[,-which(hrnames=="Selpercatinib"), drop=FALSE],
+               MARGIN=2, 
+               FUN=function(x) {x-adj.d})
+adj.d <- cbind(matrix(0, ncol=1, nrow=nrow(adj.d)), adj.d)
+
+
+g <- plot_st1_survival(modseq.i=adj.jagsmod, 
+                  times=seq(1, 52*3, length.out = 100), 
+                  refstudy=refstudy, 
+                  refmod=refmod,
+                  trtnames = hrnames[c(4,1:3)], # Treatment names of constant HR
+                  d=adj.d,
+                  plot.treats=plot.treats) + 
+  xlab("Time (months)")
+
+plot(g)
+```
+
+```{r, eval=FALSE}
+# Note that interval has to be wide enough to allow for ALL potential MCMC median survival estimates
+surv <- survquantile(modseq.i[[finalmod]], 
+                     refstudy=refstudy,
+                     refmod = refmod,
+                     treatments = plot.treats,
+                     quantile=0.5, interval=c(0.1,100))
+tab <- print(surv)
+
+knitr::kable(tab, digits=2, 
+                  caption="Median survival for the fractional polynomial model reported above")
+```
+
+
+
+# Survival predictions for ST1, Non-squamous, PDL1 <1%, RET fusion +
+
+Selected reference for ST1 RET fusion + (non-squamous) population is Selpercatinib from **LIBRETTO-001**.
+
+```{r}
+# plot.treats <- all.treats[!all.treats %in% c("Sotorasib",
+#                                              "Pembrolizumab",
+#                                              "Nivolumab")]
+plot.treats <- c("Selpercatinib", "Atezolizumab",
+                 "Docetaxel", "Docetaxel-Nintedanib", "Pemetrexed + Carboplatin")
+
+modseq.i <- modseq.0
+finalmod <- candmod$model[1]
+refmod <- refseq.ret[[finalmod]]
+refstudy <- "LIBRETTO-001"
+pdl1 <- "<1%"
+mutation <- "RET fusion +ve"
+times <- seq(1, 52*3, length.out = 100)
+hist <- "non-squamous"
+```
+
+```{r, results="hide", fig.cap=paste("Predicted survival curves and extrapolations for the selected model (2nd order fractional polynomial) of PFS for all treatments at ST1 for PDL1", pdl1,",", hist, "patients,", mutation, "mutation.")}
+hrnames <- attributes(hrmod)$trtnames
+
+# Select d values for Docteaxel vs Selpercatinib
+adj.d <- d[,which(hrnames=="Selpercatinib"), drop=FALSE]
+
+# Adjust FP model to make it relative to Selpercatinib by applying constant HR
+adj.jagsmod <- fp_applyhr(d=adj.d, # Docetaxel vs Selpercatinib
+                          jagsmod=modseq.i[[finalmod]],
+                          refmod=refmod,
+                          reftrt="Selpercatinib"
+                          )
+
+adj.d <- apply(d[,-which(hrnames=="Selpercatinib"), drop=FALSE],
+               MARGIN=2, 
+               FUN=function(x) {x-adj.d})
+adj.d <- cbind(matrix(0, ncol=1, nrow=nrow(adj.d)), adj.d)
+
+
+g <- plot_st1_survival(modseq.i=adj.jagsmod, 
+                  times=seq(1, 52*3, length.out = 100), 
+                  refstudy=refstudy, 
+                  refmod=refmod,
+                  trtnames = hrnames[c(4,1:3)], # Treatment names of constant HR
+                  d=adj.d,
+                  plot.treats=plot.treats) + 
+  xlab("Time (months)")
+
+plot(g)
+```
+
+```{r, eval=FALSE}
+# Note that interval has to be wide enough to allow for ALL potential MCMC median survival estimates
+surv <- survquantile(modseq.i[[finalmod]], 
+                     refstudy=refstudy,
+                     refmod = refmod,
+                     treatments = plot.treats,
+                     quantile=0.5, interval=c(0.1,100))
+tab <- print(surv)
+
+knitr::kable(tab, digits=2, 
+                  caption="Median survival for the fractional polynomial model reported above")
+```
+
